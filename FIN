@@ -1,0 +1,2532 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'dart:ui';
+import 'dart:convert';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:local_auth/local_auth.dart';
+
+// === ГЛОБАЛЬНЫЕ НАСТРОЙКИ И ЛОКАЛИЗАЦИЯ ===
+bool globalIsLightMode = false, globalIsBgBlurred = false, isProUser = false;
+String appCurrency = '₸'; 
+String appLanguage = 'ru';
+
+Color get pText => globalIsLightMode ? Colors.black : Colors.white;
+Color get sText => globalIsLightMode ? Colors.black54 : Colors.white70;
+Color get gBg => globalIsLightMode ? Colors.black.withOpacity(0.03) : Colors.white.withOpacity(0.05);
+Color get gBorder => globalIsLightMode ? Colors.black.withOpacity(0.1) : Colors.white.withOpacity(0.1);
+Color get sBg => globalIsLightMode ? const Color(0xFFF5F5F7).withOpacity(0.95) : const Color(0xFF15151A).withOpacity(0.9);
+Color appAccentColor = const Color(0xFF00FFA3);
+Color get accentTextColor => appAccentColor.computeLuminance() < 0.5 ? Colors.white : Colors.black;
+
+String t(String ru, String en) => appLanguage == 'ru' ? ru : en; 
+String formatCustomDate(DateTime d) => '${d.day} ${['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][d.month - 1]} ${d.year}';
+String formatMoney(int amount) => amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ');
+
+// === МОДЕЛИ ДАННЫХ ===
+class CategoryItem { 
+  String name; IconData icon; Color color; String scope; 
+  CategoryItem(this.name, this.icon, this.color, {this.scope = 'both'}); 
+}
+
+class BankAccount { 
+  String id; String name; int balance; Color color; IconData icon; 
+  BankAccount({required this.id, required this.name, required this.balance, required this.color, required this.icon}); 
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'balance': balance, 'color': color.value, 'icon': icon.codePoint}; 
+  factory BankAccount.fromJson(Map<String, dynamic> j) => BankAccount(id: j['id'], name: j['name'], balance: j['balance'], color: Color(j['color']), icon: IconData(j['icon'], fontFamily: 'MaterialIcons')); 
+}
+
+class BigGoal { 
+  String id; String name; int targetAmount; int savedAmount; Color color; IconData icon; 
+  BigGoal({required this.id, required this.name, required this.targetAmount, required this.savedAmount, required this.color, required this.icon}); 
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'targetAmount': targetAmount, 'savedAmount': savedAmount, 'color': color.value, 'icon': icon.codePoint}; 
+  factory BigGoal.fromJson(Map<String, dynamic> j) => BigGoal(id: j['id'], name: j['name'], targetAmount: j['targetAmount'], savedAmount: j['savedAmount'], color: Color(j['color']), icon: IconData(j['icon'], fontFamily: 'MaterialIcons')); 
+}
+
+class RecurringTx { 
+  String id; String title; int amount; String type; String category; String accountId; int dayOfMonth; 
+  RecurringTx({required this.id, required this.title, required this.amount, required this.type, required this.category, required this.accountId, required this.dayOfMonth}); 
+  Map<String, dynamic> toJson() => {'id': id, 'title': title, 'amount': amount, 'type': type, 'category': category, 'accountId': accountId, 'dayOfMonth': dayOfMonth}; 
+  factory RecurringTx.fromJson(Map<String, dynamic> j) => RecurringTx(id: j['id'], title: j['title'], amount: j['amount'], type: j['type'], category: j['category'], accountId: j['accountId'], dayOfMonth: j['dayOfMonth']); 
+}
+
+class Transaction { 
+  final dynamic id; final String title, note, type, category; final int amount; final IconData icon; final Color iconColor; final DateTime date; 
+  Transaction({required this.id, required this.title, required this.note, required this.amount, required this.type, required this.category, required this.icon, required this.iconColor, required this.date}); 
+  Map<String, dynamic> toJson() => {'id': id, 'title': title, 'note': note, 'type': type, 'category': category, 'amount': amount, 'icon': icon.codePoint, 'iconColor': iconColor.value, 'date': date.toIso8601String()}; 
+  factory Transaction.fromJson(Map<String, dynamic> json) => Transaction(id: json['id'], title: json['title'], note: json['note'], type: json['type'], category: json['category'], amount: json['amount'], icon: IconData(json['icon'], fontFamily: 'MaterialIcons'), iconColor: Color(json['iconColor']), date: DateTime.parse(json['date'])); 
+}
+
+// === БАЗОВЫЕ ДАННЫЕ И СПИСКИ ===
+List<BankAccount> myAccounts = [];
+List<BigGoal> myGoals = [];
+List<RecurringTx> myRecurring = [];
+
+final List<CategoryItem> defaultCategories = [
+  CategoryItem('Супермаркеты', Icons.shopping_cart_outlined, Colors.blue, scope: 'expense'), 
+  CategoryItem('Рестораны', Icons.restaurant, Colors.orange, scope: 'expense'), 
+  CategoryItem('Зарплата', Icons.attach_money, Colors.green, scope: 'income'), 
+  CategoryItem('Транспорт', Icons.local_taxi, Colors.yellow, scope: 'expense'), 
+  CategoryItem('Инвестиции', Icons.trending_up, Colors.amber, scope: 'both'), 
+  CategoryItem('Разное', Icons.category_outlined, Colors.grey, scope: 'both')
+];
+List<CategoryItem> appCategories = defaultCategories.map((c) => CategoryItem(c.name, c.icon, c.color, scope: c.scope)).toList();
+
+final List<Color> availableColors = [Colors.blue, Colors.red, Colors.green, Colors.orange, Colors.purple, Colors.pink, Colors.teal, Colors.cyan, Colors.amber, Colors.indigo, Colors.brown, Colors.grey];
+final List<IconData> availableIcons = [Icons.shopping_cart_outlined, Icons.restaurant, Icons.local_taxi, Icons.subscriptions_outlined, Icons.trending_up, Icons.sell_outlined, Icons.home_outlined, Icons.flight, Icons.pets, Icons.fitness_center, Icons.school_outlined, Icons.local_hospital_outlined, Icons.movie_outlined, Icons.sports_esports, Icons.checkroom, Icons.account_balance_wallet_outlined, Icons.laptop_mac, Icons.phone_iphone, Icons.coffee, Icons.attach_money, Icons.directions_car, Icons.house, Icons.payment];
+final List<String> premiumWallpapers = [
+  'https://images.unsplash.com/photo-1614850523459-c2f4c699c52e?q=80&w=1080', 'black_solid', 'white_solid', 
+  'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?q=80&w=1080', 'https://images.unsplash.com/photo-1511512578047-dfb367046420?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1080', 'https://images.unsplash.com/photo-1557672172-298e090bd0f1?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?q=80&w=1080', 'https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1604871000636-074fa5117945?q=80&w=1080', 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1554034483-04fda0d3507b?q=80&w=1080', 'https://images.unsplash.com/photo-1518837695005-2083093ee35b?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1550684848-fac1c5b4e853?q=80&w=1080', 'https://images.unsplash.com/photo-1550684376-efcbd6e3f031?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?q=80&w=1080', 'https://images.unsplash.com/photo-1558591710-4b4a1ae0f04d?q=80&w=1080', 
+  'https://images.unsplash.com/photo-1506744626753-149bf94924cb?q=80&w=1080'
+];
+
+final Map<String, Color> wallpaperAccents = { 
+  premiumWallpapers[0]: const Color(0xFF00FFA3), 'black_solid': const Color(0xFF00FFA3), 'white_solid': Colors.black, 
+  premiumWallpapers[3]: const Color(0xFF00E5FF), premiumWallpapers[4]: const Color(0xFFFF3366), premiumWallpapers[5]: const Color(0xFFFFD700), 
+  premiumWallpapers[6]: const Color(0xFFFF5E00), premiumWallpapers[7]: const Color(0xFFE040FB), premiumWallpapers[8]: const Color(0xFF00E676), 
+  premiumWallpapers[9]: const Color(0xFFFF1744), premiumWallpapers[10]: const Color(0xFF00B0FF), premiumWallpapers[11]: const Color(0xFFFF9100), 
+  premiumWallpapers[12]: const Color(0xFF1DE9B6), premiumWallpapers[13]: const Color(0xFF651FFF), premiumWallpapers[14]: const Color(0xFFF50057), 
+  premiumWallpapers[15]: const Color(0xFF00E5FF), premiumWallpapers[16]: const Color(0xFFE040FB), premiumWallpapers[17]: const Color(0xFF00FFA3) 
+};
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: 'https://ssrlwjjyqfzsancuzbso.supabase.co', anonKey: 'sb_publishable_1g8xHUefLbtZzR_rAGe1sA_FO7LVpPZ');
+  runApp(const FlowIQApp());
+}
+
+class FlowIQApp extends StatelessWidget { 
+  const FlowIQApp({super.key}); 
+  @override 
+  Widget build(BuildContext context) { 
+    return MaterialApp(
+      debugShowCheckedModeBanner: false, 
+      title: 'FlowIQ', 
+      theme: ThemeData(brightness: Brightness.dark, scaffoldBackgroundColor: Colors.transparent, fontFamily: 'SF Pro Display'), 
+      home: const RootScreen()
+    ); 
+  } 
+}
+
+// --- КЭШИРОВАНИЕ И СОХРАНЕНИЕ ---
+Future<void> saveCategoriesToPrefs() async { 
+  final prefs = await SharedPreferences.getInstance(); 
+  await prefs.setStringList('saved_categories', appCategories.map((c) => '${c.name}|${c.icon.codePoint}|${c.color.value}|${c.scope}').toList()); 
+}
+Future<void> loadCategoriesFromPrefs() async { 
+  final prefs = await SharedPreferences.getInstance(); 
+  List<String>? encoded = prefs.getStringList('saved_categories'); 
+  if (encoded != null && encoded.isNotEmpty) {
+    appCategories = encoded.map((s) { 
+      final parts = s.split('|'); 
+      return CategoryItem(parts[0], IconData(int.parse(parts[1]), fontFamily: 'MaterialIcons'), Color(int.parse(parts[2])), scope: parts.length > 3 ? parts[3] : 'both'); 
+    }).toList(); 
+  }
+}
+Future<void> saveLocalData() async { 
+  final prefs = await SharedPreferences.getInstance(); 
+  await prefs.setString('my_accounts', jsonEncode(myAccounts.map((a) => a.toJson()).toList())); 
+  await prefs.setString('my_goals', jsonEncode(myGoals.map((g) => g.toJson()).toList())); 
+  await prefs.setString('my_recurring', jsonEncode(myRecurring.map((r) => r.toJson()).toList())); 
+}
+Future<void> loadLocalData() async { 
+  final prefs = await SharedPreferences.getInstance(); 
+  appCurrency = prefs.getString('app_currency') ?? '₸';
+  appLanguage = prefs.getString('app_language') ?? 'ru';
+  
+  final accStr = prefs.getString('my_accounts'); 
+  if (accStr != null) myAccounts = List<BankAccount>.from(jsonDecode(accStr).map((x) => BankAccount.fromJson(x))); 
+  if (myAccounts.isEmpty) myAccounts = [BankAccount(id: '1', name: t('Наличные', 'Cash'), balance: 0, color: Colors.green, icon: Icons.payments)];
+  
+  final goalStr = prefs.getString('my_goals'); 
+  if (goalStr != null) myGoals = List<BigGoal>.from(jsonDecode(goalStr).map((x) => BigGoal.fromJson(x))); 
+  
+  final recStr = prefs.getString('my_recurring'); 
+  if (recStr != null) myRecurring = List<RecurringTx>.from(jsonDecode(recStr).map((x) => RecurringTx.fromJson(x))); 
+}
+
+class GlassCard extends StatelessWidget {
+  final Widget child; final EdgeInsetsGeometry? padding, margin; final Color? customBorder; final VoidCallback? onTap;
+  const GlassCard({super.key, required this.child, this.padding, this.margin, this.customBorder, this.onTap});
+  
+  @override 
+  Widget build(BuildContext context) { 
+    return GestureDetector(
+      onTap: onTap, 
+      child: Container(
+        margin: margin, 
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: globalIsBgBlurred ? 15 : 0, sigmaY: globalIsBgBlurred ? 15 : 0), 
+            child: Container(
+              padding: padding ?? const EdgeInsets.all(20), 
+              decoration: BoxDecoration(color: gBg, borderRadius: BorderRadius.circular(20), border: Border.all(color: customBorder ?? gBorder)), 
+              child: child
+            )
+          )
+        )
+      )
+    ); 
+  }
+}
+
+class DateRangePickerButton extends StatelessWidget {
+  final DateTimeRange selectedDateRange; final Function(DateTimeRange) onRangeChanged;
+  const DateRangePickerButton({super.key, required this.selectedDateRange, required this.onRangeChanged});
+  
+  Future<void> _pickRange(BuildContext context) async {
+    final DateTimeRange? picked = await showDateRangePicker(
+      context: context, initialDateRange: selectedDateRange, firstDate: DateTime(2020), lastDate: DateTime(2030), 
+      builder: (context, child) { 
+        return Theme(
+          data: globalIsLightMode 
+            ? ThemeData.light().copyWith(scaffoldBackgroundColor: const Color(0xFFF5F5F7), colorScheme: ColorScheme.light(primary: appAccentColor, surface: const Color(0xFFF5F5F7), onSurface: Colors.black, onPrimary: Colors.white)) 
+            : ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF15151A), colorScheme: ColorScheme.dark(primary: appAccentColor, surface: const Color(0xFF15151A), onSurface: Colors.white, onPrimary: Colors.black)), 
+          child: child!
+        ); 
+      }
+    );
+    if (picked != null) onRangeChanged(picked);
+  }
+  
+  @override 
+  Widget build(BuildContext context) {
+    String label = "${formatCustomDate(selectedDateRange.start)} - ${formatCustomDate(selectedDateRange.end)}";
+    if (selectedDateRange.start.year == selectedDateRange.end.year && selectedDateRange.start.month == selectedDateRange.end.month && selectedDateRange.start.day == 1 && selectedDateRange.end.day == DateTime(selectedDateRange.start.year, selectedDateRange.start.month + 1, 0).day) {
+      label = "${['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][selectedDateRange.start.month - 1]} ${selectedDateRange.start.year}";
+    }
+    return GlassCard(
+      onTap: () => _pickRange(context), 
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), 
+      child: Row(
+        mainAxisSize: MainAxisSize.min, 
+        children: [
+          Icon(Icons.calendar_today_rounded, color: appAccentColor, size: 16), 
+          const SizedBox(width: 6), 
+          Flexible(child: Text(label, style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)), 
+          const SizedBox(width: 4), 
+          Icon(Icons.keyboard_arrow_down_rounded, color: sText, size: 18)
+        ]
+      )
+    );
+  }
+}
+
+class RootScreen extends StatefulWidget { 
+  const RootScreen({super.key}); 
+  @override State<RootScreen> createState() => _RootScreenState(); 
+}
+
+class _RootScreenState extends State<RootScreen> {
+  int _currentIndex = 0, totalBalance = 0, streakCount = 1; 
+  List<Transaction> allTransactions = []; 
+  bool isLoading = true, isLocked = false; 
+  String? currentBg; String userLevel = "🐣 Новичок";
+  DateTimeRange selectedDateRange = DateTimeRange(start: DateTime(DateTime.now().year, DateTime.now().month, 1), end: DateTime(DateTime.now().year, DateTime.now().month + 1, 0));
+  
+  final LocalAuthentication auth = LocalAuthentication(); String? savedPin; bool useBiometrics = false; String enteredPin = "";
+
+  @override 
+  void initState() { 
+    super.initState(); 
+    _initApp(); 
+  }
+
+  Future<void> _initApp() async {
+    final prefs = await SharedPreferences.getInstance(); 
+    isProUser = prefs.getBool('is_pro_user') ?? false; 
+    savedPin = prefs.getString('app_pin'); 
+    useBiometrics = prefs.getBool('use_biometrics') ?? false;
+    
+    if (savedPin != null && isProUser) { 
+      setState(() => isLocked = true); 
+      if (useBiometrics) { 
+        Future.delayed(const Duration(milliseconds: 500), () { if (mounted) _authenticateBiometrics(); }); 
+      } 
+    }
+    await loadCategoriesFromPrefs(); 
+    await loadLocalData(); 
+    await _loadSettings(); 
+    await _updateStreak(); 
+    await _loadCachedTransactions(); 
+    _fetchTransactions();
+  }
+
+  Future<void> _loadCachedTransactions() async {
+    final prefs = await SharedPreferences.getInstance(); 
+    final String? cachedData = prefs.getString('cached_tx');
+    if (cachedData != null) {
+      Iterable decoded = jsonDecode(cachedData); 
+      List<Transaction> cachedTx = List<Transaction>.from(decoded.map((model) => Transaction.fromJson(model)));
+      int calcBal = myAccounts.fold(0, (sum, acc) => sum + acc.balance);
+      if (mounted) setState(() { allTransactions = cachedTx; totalBalance = calcBal; isLoading = false; });
+    }
+  }
+
+  Future<void> _authenticateBiometrics() async { 
+    try { 
+      bool authenticated = await auth.authenticate(localizedReason: t('Разблокируйте FlowIQ', 'Unlock FlowIQ')); 
+      if (authenticated) setState(() => isLocked = false); 
+    } catch (e) { print(e); } 
+  }
+  
+  void _onPinKeyPress(String digit) { 
+    if (digit == "<") { 
+      if (enteredPin.isNotEmpty) setState(() => enteredPin = enteredPin.substring(0, enteredPin.length - 1)); 
+    } else { 
+      if (enteredPin.length < 4) setState(() => enteredPin += digit); 
+      if (enteredPin.length == 4) { 
+        if (enteredPin == savedPin) { 
+          setState(() { isLocked = false; enteredPin = ""; }); 
+        } else { 
+          HapticFeedback.heavyImpact(); setState(() => enteredPin = ""); 
+        } 
+      } 
+    } 
+  }
+  
+  void _forceRebuild() { setState(() {}); _fetchTransactions(); }
+
+  Future<void> _updateStreak() async {
+    final prefs = await SharedPreferences.getInstance(); 
+    final String? lastDateStr = prefs.getString('last_login_date'); 
+    final DateTime today = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+    if (lastDateStr != null) { 
+      final diff = today.difference(DateTime.parse(lastDateStr)).inDays; 
+      streakCount = (diff == 1) ? (prefs.getInt('streak_count') ?? 1) + 1 : (diff == 0 ? (prefs.getInt('streak_count') ?? 1) : 1); 
+    } 
+    await prefs.setString('last_login_date', today.toIso8601String()); 
+    await prefs.setInt('streak_count', streakCount); 
+    userLevel = streakCount < 3 ? t("🐣 Новичок", "🐣 Beginner") : (streakCount < 7 ? t("🛡️ Контролёр", "🛡️ Controller") : t("👑 Инвестор", "👑 Investor")); 
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadSettings() async { 
+    final prefs = await SharedPreferences.getInstance(); 
+    final url = prefs.getString('wallpaper'); 
+    globalIsBgBlurred = prefs.getBool('bg_blur') ?? false; 
+    setState(() { 
+      currentBg = url; globalIsLightMode = url == 'white_solid'; 
+      appAccentColor = url != null ? (wallpaperAccents[url] ?? const Color(0xFF00FFA3)) : const Color(0xFF00FFA3); 
+    }); 
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(statusBarColor: Colors.transparent, statusBarIconBrightness: globalIsLightMode ? Brightness.dark : Brightness.light, systemNavigationBarIconBrightness: globalIsLightMode ? Brightness.dark : Brightness.light)); 
+  }
+  
+  Future<void> _changeWallpaper(String? url) async { 
+    final prefs = await SharedPreferences.getInstance(); 
+    if (url == null) { prefs.remove('wallpaper'); } else { prefs.setString('wallpaper', url); } 
+    await _loadSettings(); 
+  }
+
+  Future<void> _fetchTransactions() async {
+    try {
+      final data = await Supabase.instance.client.from('transactions').select().order('created_at', ascending: false);
+      List<Transaction> fetchedTx = []; 
+      for (var row in data) {
+        final type = row['type'] as String? ?? 'expense'; 
+        final amount = (row['amount'] as num).toInt(); 
+        final catName = row['category'] as String? ?? 'Разное';
+        final catObj = appCategories.firstWhere((c) => c.name == catName, orElse: () => CategoryItem(catName, Icons.category, Colors.grey));
+        
+        IconData txIcon = catObj.icon; Color txColor = catObj.color;
+        if (type == 'income' || type == 'asset_sale') { txIcon = Icons.arrow_downward; txColor = globalIsLightMode ? Colors.blueAccent : Colors.blue; }
+        if (type == 'asset' || type == 'asset_owned' || type == 'sold_asset') { txIcon = Icons.diamond_outlined; txColor = globalIsLightMode ? Colors.orange : Colors.amber; }
+        if (type == 'transfer') { txIcon = Icons.swap_horiz; txColor = Colors.purpleAccent; }
+        
+        fetchedTx.add(Transaction(id: row['id'], title: row['title'], note: row['note'] ?? '', amount: amount, type: type, category: catName, icon: txIcon, iconColor: txColor, date: row['created_at'] != null ? DateTime.parse(row['created_at']) : DateTime.now()));
+      }
+      final prefs = await SharedPreferences.getInstance(); 
+      await prefs.setString('cached_tx', jsonEncode(fetchedTx.map((t) => t.toJson()).toList()));
+      if (mounted) setState(() { allTransactions = fetchedTx; totalBalance = myAccounts.fold(0, (sum, acc) => sum + acc.balance); isLoading = false; });
+    } catch (e) { 
+      if (mounted) setState(() => isLoading = false); 
+    }
+  }
+
+  void _onDateRangeChanged(DateTimeRange newRange) { 
+    setState(() { selectedDateRange = newRange; }); 
+  }
+
+  @override 
+  Widget build(BuildContext context) {
+    Widget bgLayer = currentBg == 'white_solid' ? Container(color: Colors.white) : (currentBg == 'black_solid' ? Container(color: Colors.black) : (currentBg != null ? Stack(fit: StackFit.expand, children: [Image.network(currentBg!, fit: BoxFit.cover, errorBuilder: (c, e, s) => Container(color: const Color(0xFF0F0F13))), Container(color: Colors.black.withOpacity(globalIsBgBlurred ? 0.0 : 0.4))]) : Container(color: const Color(0xFF0F0F13))));
+
+    if (isLocked) {
+      return Stack(
+        children: [
+          bgLayer, Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), child: Container(color: Colors.black.withOpacity(0.6)))),
+          Scaffold(
+            backgroundColor: Colors.transparent, 
+            body: SafeArea(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center, 
+                children: [
+                  const Spacer(), 
+                  Icon(Icons.lock_outline, color: appAccentColor, size: 56), 
+                  const SizedBox(height: 16), 
+                  Text(t("Введите ПИН-код", "Enter PIN"), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 32), 
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(4, (index) => Container(margin: const EdgeInsets.symmetric(horizontal: 12), width: 16, height: 16, decoration: BoxDecoration(shape: BoxShape.circle, color: index < enteredPin.length ? appAccentColor : Colors.white.withOpacity(0.2))))), 
+                  const Spacer(), 
+                  GridView.count(
+                    crossAxisCount: 3, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), padding: const EdgeInsets.symmetric(horizontal: 40), childAspectRatio: 1.2, 
+                    children: [
+                      for (var i = 1; i <= 9; i++) GestureDetector(onTap: () => _onPinKeyPress(i.toString()), child: Center(child: Container(width: 70, height: 70, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.1)), child: Center(child: Text(i.toString(), style: const TextStyle(fontSize: 28, color: Colors.white, fontWeight: FontWeight.w500)))))), 
+                      useBiometrics ? GestureDetector(onTap: _authenticateBiometrics, child: Center(child: Container(width: 70, height: 70, decoration: const BoxDecoration(shape: BoxShape.circle), child: const Center(child: Icon(Icons.face_retouching_natural, color: Colors.white, size: 36))))) : const SizedBox.shrink(), 
+                      GestureDetector(onTap: () => _onPinKeyPress("0"), child: Center(child: Container(width: 70, height: 70, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.1)), child: const Center(child: Text("0", style: TextStyle(fontSize: 28, color: Colors.white, fontWeight: FontWeight.w500)))))), 
+                      GestureDetector(onTap: () => _onPinKeyPress("<"), child: Center(child: Container(width: 70, height: 70, decoration: const BoxDecoration(shape: BoxShape.circle), child: const Center(child: Icon(Icons.backspace_outlined, color: Colors.white, size: 28))))) 
+                    ]
+                  ), 
+                  const SizedBox(height: 40)
+                ]
+              )
+            )
+          )
+        ]
+      );
+    }
+
+    List<Transaction> filteredTx = allTransactions.where((t) { 
+      DateTime nDate = DateTime(t.date.year, t.date.month, t.date.day); 
+      DateTime start = DateTime(selectedDateRange.start.year, selectedDateRange.start.month, selectedDateRange.start.day); 
+      DateTime end = DateTime(selectedDateRange.end.year, selectedDateRange.end.month, selectedDateRange.end.day); 
+      return (nDate.isAfter(start.subtract(const Duration(days: 1))) && nDate.isBefore(end.add(const Duration(days: 1)))); 
+    }).toList();
+    
+    final screens = [ 
+      DashboardScreen(allTransactions: allTransactions, filteredTransactions: filteredTx, balance: totalBalance, isLoading: isLoading, onRefresh: _forceRebuild, streak: streakCount, level: userLevel, selectedDateRange: selectedDateRange, onDateRangeChanged: _onDateRangeChanged), 
+      AnalyticsScreen(allTransactions: allTransactions, transactions: filteredTx, selectedDateRange: selectedDateRange, onDateRangeChanged: _onDateRangeChanged), 
+      PlanScreen(allTransactions: allTransactions, totalBalance: totalBalance), 
+      ProfileScreen(currentBg: currentBg, onBgChanged: _changeWallpaper, streak: streakCount, level: userLevel, onSettingsUpdated: _loadSettings, onRefresh: _forceRebuild) 
+    ];
+    
+    return Stack(
+      children: [ 
+        bgLayer, 
+        if (globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, extendBody: true, body: screens[_currentIndex], 
+          bottomNavigationBar: ClipRRect(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20), 
+              child: Container(
+                decoration: BoxDecoration(color: globalIsLightMode ? Colors.white.withOpacity(0.9) : Colors.black.withOpacity(0.4), border: Border(top: BorderSide(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.1), width: 1))), 
+                child: BottomNavigationBar(
+                  currentIndex: _currentIndex, onTap: (index) => setState(() => _currentIndex = index), 
+                  backgroundColor: Colors.transparent, type: BottomNavigationBarType.fixed, selectedItemColor: appAccentColor, unselectedItemColor: globalIsLightMode ? Colors.black38 : Colors.grey.withOpacity(0.8), showSelectedLabels: true, showUnselectedLabels: true, selectedFontSize: 12, unselectedFontSize: 12, elevation: 0, 
+                  items: [
+                    BottomNavigationBarItem(icon: const Icon(Icons.home_filled), label: t("Главная", "Home")), 
+                    BottomNavigationBarItem(icon: const Icon(Icons.pie_chart_rounded), label: t("Аналитика", "Analytics")), 
+                    BottomNavigationBarItem(icon: const Icon(Icons.track_changes_rounded), label: t("План", "Plan")), 
+                    BottomNavigationBarItem(icon: const Icon(Icons.person), label: t("Профиль", "Profile"))
+                  ]
+                )
+              )
+            )
+          )
+        ) 
+      ]
+    );
+  }
+}
+class DashboardScreen extends StatelessWidget {
+  final List<Transaction> allTransactions; 
+  final List<Transaction> filteredTransactions; 
+  final int balance; 
+  final bool isLoading; 
+  final VoidCallback onRefresh; 
+  final int streak; 
+  final String level; 
+  final DateTimeRange selectedDateRange; 
+  final Function(DateTimeRange) onDateRangeChanged;
+  
+  const DashboardScreen({super.key, required this.allTransactions, required this.filteredTransactions, required this.balance, required this.isLoading, required this.onRefresh, required this.streak, required this.level, required this.selectedDateRange, required this.onDateRangeChanged});
+
+  void _safeExecute(BuildContext context, Future<void> Function() action) async { 
+    try { 
+      await action(); 
+      await saveLocalData(); 
+      onRefresh(); 
+    } catch (e) { 
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('⚠️ Ошибка сети.'), backgroundColor: Colors.redAccent)); 
+    } 
+  }
+
+  Future<void> _showAddTransactionSheet(BuildContext context) async {
+    if (myAccounts.isEmpty) { 
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Сначала создайте счет в Настройках', 'Create an account in Settings first')), backgroundColor: Colors.orange)); 
+      return; 
+    }
+    
+    final result = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (context) { return const AddTransactionSheet(); }
+    );
+    
+    if (result != null && result['amount'] > 0) {
+      _safeExecute(context, () async {
+        var acc = myAccounts.firstWhere((a) => a.id == result['accountId']);
+        if (result['type'] == 'expense' || result['type'] == 'asset') acc.balance -= result['amount'] as int;
+        else if (result['type'] == 'income') acc.balance += result['amount'] as int;
+        
+        await Supabase.instance.client.from('transactions').insert({'title': result['title'], 'note': result['note'], 'amount': result['amount'], 'type': result['type'], 'category': result['category']});
+      });
+    }
+  }
+
+  Future<void> _showTransferSheet(BuildContext context) async {
+    if (myAccounts.length < 2) { 
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Нужно минимум 2 счета для перевода', 'Need at least 2 accounts')), backgroundColor: Colors.orange)); 
+      return; 
+    }
+    
+    final result = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (context) { return const TransferSheet(); }
+    );
+    
+    if (result != null && result['amount'] > 0) {
+      _safeExecute(context, () async {
+        var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
+        var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
+        
+        fromAcc.balance -= result['amount'] as int; 
+        toAcc.balance += result['amount'] as int;
+        
+        await Supabase.instance.client.from('transactions').insert({'title': '${t("Перевод", "Transfer")}: ${fromAcc.name} ➔ ${toAcc.name}', 'note': '', 'amount': result['amount'], 'type': 'transfer', 'category': 'Разное'});
+      });
+    }
+  }
+
+  void _showInfoPopup(BuildContext context) {
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, 
+      builder: (c) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            padding: const EdgeInsets.all(30), decoration: BoxDecoration(color: sBg), 
+            child: Column(
+              mainAxisSize: MainAxisSize.min, 
+              children: [
+                Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 20), 
+                Icon(Icons.auto_graph, color: appAccentColor, size: 48), 
+                const SizedBox(height: 24), 
+                Text(t("Как работают Активы?", "How Assets Work?"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                const SizedBox(height: 16), 
+                Text(t("Активы не портят график трат.\nПри продаже мы считаем чистую маржу. Прибыль идет в доходы, убыток — в расходы.", "Assets do not affect spending charts. We calculate net margin upon sale."), style: TextStyle(color: sText, fontSize: 16), textAlign: TextAlign.center), 
+                const SizedBox(height: 30), 
+                SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () => Navigator.pop(c), child: Text(t("Понятно", "Got it"), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))))
+              ]
+            )
+          )
+        )
+      )
+    );
+  }
+
+  Future<void> _showAssetDetailsSheet(BuildContext context, Transaction tx) async {
+    String baseTitle = tx.title.replaceFirst('Продажа: ', '');
+    final buyTx = allTransactions.firstWhere((t) => (t.type == 'asset' || t.type == 'asset_owned' || t.type == 'sold_asset') && t.title == baseTitle, orElse: () => tx);
+    final sellTx = allTransactions.firstWhere((t) => t.type == 'asset_sale' && t.title == 'Продажа: $baseTitle', orElse: () => tx);
+    bool isSold = buyTx.type == 'sold_asset'; int delta = (isSold ? sellTx.amount : 0) - buyTx.amount;
+    
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            padding: const EdgeInsets.only(bottom: 40, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+            child: Column(
+              mainAxisSize: MainAxisSize.min, 
+              children: [
+                Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 30),
+                Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: (globalIsLightMode ? Colors.orange : Colors.amber).withOpacity(0.2), shape: BoxShape.circle), child: Icon(Icons.diamond_outlined, color: globalIsLightMode ? Colors.orange : Colors.amber, size: 40)), 
+                const SizedBox(height: 16),
+                Text(baseTitle, style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                if (buyTx.note.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8.0), child: Text(buyTx.note, style: TextStyle(color: sText, fontSize: 14))), 
+                const SizedBox(height: 24),
+                Container(
+                  padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.03) : Colors.white.withOpacity(0.03), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
+                  child: Column(
+                    children: [
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Статус', 'Status'), style: TextStyle(color: sText, fontSize: 16)), Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: isSold ? Colors.grey.withOpacity(0.2) : appAccentColor.withOpacity(0.2), borderRadius: BorderRadius.circular(8)), child: Text(isSold ? t('Продан', 'Sold') : t('В портфеле', 'Active'), style: TextStyle(color: isSold ? sText : appAccentColor, fontWeight: FontWeight.bold, fontSize: 12)))]), 
+                      const SizedBox(height: 16), 
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Куплено за', 'Bought for'), style: TextStyle(color: sText, fontSize: 16)), Text('${formatMoney(buyTx.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))]), 
+                      if (isSold) ...[
+                        const SizedBox(height: 16), 
+                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Продано за', 'Sold for'), style: TextStyle(color: sText, fontSize: 16)), Text('${formatMoney(sellTx.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))]), 
+                        Padding(padding: const EdgeInsets.symmetric(vertical: 16), child: Divider(color: gBorder)), 
+                        Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: delta >= 0 ? Colors.green.withOpacity(0.1) : Colors.redAccent.withOpacity(0.1), borderRadius: BorderRadius.circular(12)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(delta >= 0 ? t('Чистая прибыль', 'Net Profit') : t('Убыток', 'Loss'), style: TextStyle(color: delta >= 0 ? Colors.green : Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold)), Text('${delta > 0 ? "+" : ""}${formatMoney(delta)} $appCurrency', style: TextStyle(color: delta >= 0 ? Colors.green : Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold))]))
+                      ] 
+                    ]
+                  )
+                ), 
+                const SizedBox(height: 24),
+                if (!isSold) 
+                  Row(
+                    children: [
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () async { await Supabase.instance.client.from('transactions').delete().eq('id', buyTx.id); Navigator.pop(c); onRefresh(); }, child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      const SizedBox(width: 12), 
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: Colors.black, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { Navigator.pop(c); _sellAsset(context, buyTx); }, child: Text(t("Продать", "Sell"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                    ]
+                  ) 
+                else 
+                  SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () async { await Supabase.instance.client.from('transactions').delete().eq('id', buyTx.id); if (sellTx.id != buyTx.id) await Supabase.instance.client.from('transactions').delete().eq('id', sellTx.id); Navigator.pop(c); onRefresh(); }, child: Text(t("Стереть из истории", "Erase History"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+              ]
+            )
+          )
+        )
+      )
+    );
+  }
+
+  Future<void> _sellAsset(BuildContext context, Transaction asset) async {
+    TextEditingController ctrl = TextEditingController();
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom), 
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: const EdgeInsets.only(bottom: 40, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+              child: Column(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2))), 
+                  const SizedBox(height: 30),
+                  Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: globalIsLightMode ? Colors.orange.withOpacity(0.2) : Colors.amber.withOpacity(0.2), shape: BoxShape.circle), child: Icon(Icons.storefront, color: globalIsLightMode ? Colors.orange : Colors.amber, size: 40)), 
+                  const SizedBox(height: 16),
+                  Text('${t("Продать", "Sell")}: ${asset.title}', style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 8),
+                  Text('${t("Куплено за", "Bought for")}: ${formatMoney(asset.amount)} $appCurrency', style: TextStyle(color: sText, fontSize: 14)), 
+                  const SizedBox(height: 24),
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity, height: 56, 
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: Colors.black, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                      onPressed: () async { 
+                        int sell = int.tryParse(ctrl.text) ?? 0; 
+                        if (sell > 0) { 
+                          await Supabase.instance.client.from('transactions').update({'type': 'sold_asset'}).eq('id', asset.id); 
+                          await Supabase.instance.client.from('transactions').insert({'title': 'Продажа: ${asset.title}', 'amount': sell, 'type': 'asset_sale', 'category': 'Инвестиции'}); 
+                          Navigator.pop(c); onRefresh(); 
+                        } 
+                      }, 
+                      child: Text(t("Подтвердить продажу", "Confirm Sale"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+                    )
+                  )
+                ]
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  Future<void> _showEditTransactionSheet(BuildContext context, Transaction tx) async {
+    TextEditingController noteCtrl = TextEditingController(text: tx.note); 
+    bool isSaving = false;
+    
+    await showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setState) => ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30),
+                    Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: tx.iconColor.withOpacity(0.2), shape: BoxShape.circle), child: Icon(tx.icon, color: tx.iconColor, size: 40)), 
+                    const SizedBox(height: 16),
+                    Text(tx.category, style: TextStyle(color: sText, fontSize: 16)), 
+                    const SizedBox(height: 8),
+                    Text('${tx.type == "income" ? "+" : "-"} ${formatMoney(tx.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 32, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 24),
+                    Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.03) : Colors.white.withOpacity(0.03), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t("Дата операции", "Date"), style: TextStyle(color: sText, fontSize: 12)), const SizedBox(height: 4), Text(formatCustomDate(tx.date), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))])), 
+                    const SizedBox(height: 16),
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: noteCtrl, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Заметка", "Note"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: Colors.redAccent, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: isSaving ? null : () async { setState(() => isSaving = true); try { await Supabase.instance.client.from('transactions').delete().eq('id', tx.id); Navigator.pop(sheetContext); onRefresh(); } catch(e) { setState(() => isSaving = false); ScaffoldMessenger.of(sheetContext).showSnackBar(const SnackBar(content: Text('⚠️ Ошибка сети.'), backgroundColor: Colors.redAccent)); } }, child: isSaving ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent)) : Text(t("Удалить", "Delete"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                        const SizedBox(width: 12),
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: isSaving ? null : () async { setState(() => isSaving = true); try { await Supabase.instance.client.from('transactions').update({'note': noteCtrl.text.trim()}).eq('id', tx.id); Navigator.pop(sheetContext); onRefresh(); } catch(e) { setState(() => isSaving = false); ScaffoldMessenger.of(sheetContext).showSnackBar(const SnackBar(content: Text('⚠️ Ошибка сети.'), backgroundColor: Colors.redAccent)); } }, child: isSaving ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: accentTextColor)) : Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                      ]
+                    ), 
+                    const SizedBox(height: 40)
+                  ]
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  @override 
+  Widget build(BuildContext context) {
+    final assets = allTransactions.where((t) => t.type == 'asset' || t.type == 'asset_owned').toList();
+    
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      floatingActionButton: Padding(
+        padding: const EdgeInsets.only(bottom: 80.0), 
+        child: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), onPressed: () => _showAddTransactionSheet(context), child: const Icon(Icons.add, size: 32))
+      ),
+      body: SafeArea(
+        bottom: false, 
+        child: isLoading && allTransactions.isEmpty 
+          ? Center(child: CircularProgressIndicator(color: appAccentColor)) 
+          : SingleChildScrollView(
+              padding: const EdgeInsets.only(left: 20.0, right: 20.0, top: 20.0, bottom: 180.0), 
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start, 
+                children: [
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                    child: Row(
+                      children: [
+                        GlassCard(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: Row(children: [const Text('🔥', style: TextStyle(fontSize: 16)), const SizedBox(width: 6), Text('$streak ${t("дней", "days")}', style: TextStyle(color: pText, fontWeight: FontWeight.bold))])), 
+                        const SizedBox(width: 10), 
+                        GlassCard(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: Text(level, style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold))), 
+                        const SizedBox(width: 10), 
+                        DateRangePickerButton(selectedDateRange: selectedDateRange, onRangeChanged: onDateRangeChanged)
+                      ]
+                    )
+                  ), 
+                  const SizedBox(height: 24),
+                  
+                  Text(t('Общий баланс', 'Total Balance'), style: TextStyle(color: sText, fontSize: 16)), 
+                  const SizedBox(height: 8), 
+                  Text('${formatMoney(balance)} $appCurrency', style: TextStyle(color: balance >= 0 ? pText : const Color(0xFFFF3366), fontSize: 46, fontWeight: FontWeight.bold, letterSpacing: -1)), 
+                  const SizedBox(height: 24),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+                    children: [
+                      Text(t('Мои счета', 'My Accounts'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+                      IconButton(icon: Icon(Icons.swap_horizontal_circle, color: appAccentColor, size: 28), onPressed: () => _showTransferSheet(context))
+                    ]
+                  ), 
+                  const SizedBox(height: 12),
+                  
+                  if(myAccounts.isEmpty) 
+                    Text(t("Создайте счета в Настройках", "Add accounts in Settings"), style: TextStyle(color: sText))
+                  else 
+                    SizedBox(
+                      height: 130, 
+                      child: ListView(
+                        scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                        children: myAccounts.map((acc) => GlassCard(
+                          margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.all(16), customBorder: acc.color.withOpacity(0.3), 
+                          child: SizedBox(
+                            width: 140, 
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
+                              children: [
+                                Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: acc.color.withOpacity(0.2), borderRadius: BorderRadius.circular(8)), child: Icon(acc.icon, color: acc.color, size: 20)), 
+                                const Spacer(), 
+                                Text(acc.name, style: TextStyle(color: sText, fontSize: 14, fontWeight: FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis), 
+                                const SizedBox(height: 4), 
+                                Text('${formatMoney(acc.balance)} $appCurrency', style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold))
+                              ]
+                            )
+                          ) 
+                        )).toList()
+                      )
+                    ),
+                  const SizedBox(height: 30),
+                  
+                  if (assets.isNotEmpty) ...[
+                    Row(
+                      children: [
+                        Expanded(child: Text(t('💼 Активы в портфеле', '💼 My Assets'), style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold))), 
+                        GestureDetector(onTap: () => _showInfoPopup(context), child: Icon(Icons.info_outline, color: sText, size: 20))
+                      ]
+                    ), 
+                    const SizedBox(height: 12), 
+                    SizedBox(
+                      height: 100, 
+                      child: ListView(
+                        scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                        children: assets.map((a) => GlassCard(
+                          onTap: () => _showAssetDetailsSheet(context, a), margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.all(16), customBorder: globalIsLightMode ? Colors.orange.withOpacity(0.3) : Colors.amber.withOpacity(0.3), 
+                          child: SizedBox(
+                            width: 130, 
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
+                              children: [
+                                Text(a.title, style: TextStyle(color: globalIsLightMode ? Colors.orange : Colors.amber, fontSize: 14, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis), 
+                                const SizedBox(height: 8), 
+                                Text('${formatMoney(a.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold))
+                              ]
+                            )
+                          ) 
+                        )).toList()
+                      )
+                    ), 
+                    const SizedBox(height: 30)
+                  ],
+                  
+                  Text(t('История (Кошелек)', 'History'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 16),
+                  
+                  filteredTransactions.isEmpty 
+                    ? Center(child: Padding(padding: const EdgeInsets.only(top: 20), child: Text(t("Нет операций", "No transactions"), style: TextStyle(color: sText)))) 
+                    : Column(
+                        children: filteredTransactions.map((tx) => GlassCard(
+                          onTap: () { if (tx.type == 'asset' || tx.type == 'asset_owned' || tx.type == 'sold_asset' || tx.title.startsWith("Продажа:")) { _showAssetDetailsSheet(context, tx); } else { _showEditTransactionSheet(context, tx); } }, 
+                          margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), 
+                          child: Row(
+                            children: [
+                              Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: tx.iconColor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(tx.icon, color: tx.iconColor, size: 24)), 
+                              const SizedBox(width: 16), 
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start, 
+                                  children: [
+                                    Text(tx.title.isNotEmpty && (tx.type == 'asset' || tx.type == 'sold_asset' || tx.type == 'transfer') ? tx.title : tx.category, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis), 
+                                    if (tx.note.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text(tx.note, style: TextStyle(color: sText, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis))
+                                  ]
+                                )
+                              ), 
+                              Text('${tx.type == "income" || tx.type == "asset_sale" ? "+" : (tx.type == "asset_owned" || tx.type == "transfer" ? "" : "-")} ${formatMoney(tx.amount)} $appCurrency', style: TextStyle(color: tx.type == 'income' || tx.type == 'asset_sale' ? (globalIsLightMode ? Colors.blueAccent : Colors.blue) : (tx.type == 'asset' || tx.type == 'asset_owned' || tx.type == 'sold_asset' ? (globalIsLightMode ? Colors.orange : Colors.amber) : (tx.type == 'transfer' ? Colors.purpleAccent : pText)), fontSize: 16, fontWeight: FontWeight.bold))
+                            ]
+                          )
+                        )).toList()
+                      )
+                ]
+              )
+            )
+      ),
+    );
+  }
+}
+
+class TransferSheet extends StatefulWidget { 
+  const TransferSheet({super.key}); 
+  @override State<TransferSheet> createState() => _TransferSheetState(); 
+}
+
+class _TransferSheetState extends State<TransferSheet> {
+  String amount = "0"; String? fromAccId, toAccId;
+  
+  @override 
+  void initState() { 
+    super.initState(); 
+    if(myAccounts.isNotEmpty) { 
+      fromAccId = myAccounts[0].id; 
+      if(myAccounts.length > 1) toAccId = myAccounts[1].id; else toAccId = myAccounts[0].id; 
+    } 
+  }
+  
+  void _onKeyPress(String value) { 
+    setState(() { 
+      if (value == "C") amount = "0"; 
+      else if (value == "<") amount = amount.length > 1 ? amount.substring(0, amount.length - 1) : "0"; 
+      else if (amount == "0") amount = value; 
+      else if (amount.length < 8) amount += value; 
+    }); 
+  }
+  
+  Widget _buildKey(String val) { 
+    return Expanded(
+      child: InkWell(
+        onTap: () => _onKeyPress(val), borderRadius: BorderRadius.circular(16), 
+        child: Container(height: 55, alignment: Alignment.center, child: Text(val, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500, color: pText)))
+      )
+    ); 
+  }
+  
+  @override 
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), 
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            decoration: BoxDecoration(color: sBg), 
+            child: Column(
+              mainAxisSize: MainAxisSize.min, 
+              children: [
+                const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 20), 
+                Text(t("Перевод между счетами", "Transfer between accounts"), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+                const SizedBox(height: 20), 
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20), 
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start, 
+                          children: [
+                            Text(t("Откуда", "From"), style: TextStyle(color: sText, fontSize: 12)), 
+                            const SizedBox(height: 4), 
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+                              child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: fromAccId, isExpanded: true, dropdownColor: sBg, items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 14)))).toList(), onChanged: (val) => setState(() => fromAccId = val)))
+                            )
+                          ]
+                        )
+                      ), 
+                      const SizedBox(width: 16), 
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start, 
+                          children: [
+                            Text(t("Куда", "To"), style: TextStyle(color: sText, fontSize: 12)), 
+                            const SizedBox(height: 4), 
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+                              child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: toAccId, isExpanded: true, dropdownColor: sBg, items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 14)))).toList(), onChanged: (val) => setState(() => toAccId = val)))
+                            )
+                          ]
+                        )
+                      )
+                    ]
+                  )
+                ), 
+                const SizedBox(height: 30), 
+                Text(amount.replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ') + " $appCurrency", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.purpleAccent)), 
+                const SizedBox(height: 20), 
+                SafeArea(
+                  top: false, 
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.black.withOpacity(0.3), borderRadius: const BorderRadius.vertical(top: Radius.circular(30))), 
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min, 
+                      children: [
+                        Row(children: [_buildKey("1"), _buildKey("2"), _buildKey("3")]), 
+                        Row(children: [_buildKey("4"), _buildKey("5"), _buildKey("6")]), 
+                        Row(children: [_buildKey("7"), _buildKey("8"), _buildKey("9")]), 
+                        Row(children: [_buildKey("C"), _buildKey("0"), _buildKey("<")]), 
+                        const SizedBox(height: 12), 
+                        SizedBox(
+                          width: double.infinity, height: 56, 
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                            onPressed: () { 
+                              if (fromAccId != toAccId && int.parse(amount) > 0) { 
+                                Navigator.pop(context, {'amount': int.parse(amount), 'fromAcc': fromAccId, 'toAcc': toAccId}); 
+                              } 
+                            }, 
+                            child: Text(t("Перевести", "Transfer"), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
+                          )
+                        )
+                      ]
+                    )
+                  )
+                )
+              ]
+            )
+          )
+        )
+      )
+    );
+  }
+}
+
+class AddTransactionSheet extends StatefulWidget { 
+  const AddTransactionSheet({super.key}); 
+  @override State<AddTransactionSheet> createState() => _AddTransactionSheetState(); 
+}
+
+class _AddTransactionSheetState extends State<AddTransactionSheet> {
+  String amount = "0", selectedType = "expense"; 
+  String? selectedCategory, selectedAccId; 
+  String title = "", note = ""; 
+  bool isAlreadyOwned = false, isSaving = false;
+  
+  @override 
+  void initState() { 
+    super.initState(); 
+    _setDefaultCategory(); 
+    if(myAccounts.isNotEmpty) selectedAccId = myAccounts[0].id; 
+  }
+  
+  void _setDefaultCategory() { 
+    final filtered = appCategories.where((c) => c.scope == 'both' || c.scope == selectedType).toList(); 
+    if(filtered.isNotEmpty) selectedCategory = filtered.first.name; 
+  }
+  
+  void _onKeyPress(String value) { 
+    setState(() { 
+      if (value == "C") amount = "0"; 
+      else if (value == "<") amount = amount.length > 1 ? amount.substring(0, amount.length - 1) : "0"; 
+      else if (amount == "0") amount = value; 
+      else if (amount.length < 8) amount += value; 
+    }); 
+  }
+  
+  Widget _buildKey(String val) { 
+    return Expanded(
+      child: InkWell(
+        onTap: () => _onKeyPress(val), borderRadius: BorderRadius.circular(16), 
+        child: Container(height: 55, alignment: Alignment.center, child: Text(val, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500, color: pText)))
+      )
+    ); 
+  }
+  
+  @override 
+  Widget build(BuildContext context) {
+    Color getBtnColor() { if (selectedType == 'income') return Colors.blue; if (selectedType == 'asset') return Colors.amber; return appAccentColor; }
+    Color getBtnTextCol() { if (selectedType == 'income' || selectedType == 'asset') return Colors.white; return accentTextColor; }
+    final filteredCategories = appCategories.where((c) => c.scope == 'both' || c.scope == selectedType).toList();
+    if (selectedCategory == null || !filteredCategories.any((c) => c.name == selectedCategory)) { if(filteredCategories.isNotEmpty) selectedCategory = filteredCategories.first.name; }
+    
+    // ИСПРАВЛЕНИЕ КЛАВИАТУРЫ: прячем калькулятор, когда открыта системная клава букв
+    bool isSystemKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            decoration: BoxDecoration(color: sBg), 
+            child: Column(
+              mainAxisSize: MainAxisSize.min, 
+              children: [
+                const SizedBox(height: 12), 
+                Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 20),
+                
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 20), 
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min, 
+                      children: [
+                        Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+                          child: Row(
+                            children: [
+                              Expanded(child: GestureDetector(onTap: () { setState(() { selectedType = 'expense'; _setDefaultCategory(); }); }, child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'expense' ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Расход", "Expense"), style: TextStyle(color: selectedType == 'expense' ? pText : sText, fontWeight: FontWeight.bold, fontSize: 12)))))), 
+                              Expanded(child: GestureDetector(onTap: () { setState(() { selectedType = 'income'; _setDefaultCategory(); }); }, child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'income' ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Доход", "Income"), style: TextStyle(color: selectedType == 'income' ? pText : sText, fontWeight: FontWeight.bold, fontSize: 12)))))), 
+                              Expanded(child: GestureDetector(onTap: () => setState(() => selectedType = 'asset'), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'asset' ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Актив", "Asset"), style: TextStyle(color: selectedType == 'asset' ? Colors.amber : sText, fontWeight: FontWeight.bold, fontSize: 12))))))
+                            ]
+                          )
+                        ), 
+                        const SizedBox(height: 20),
+                        
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20), 
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), 
+                            child: Row(
+                              children: [
+                                Text(t("Счет:", "Account:"), style: TextStyle(color: sText, fontSize: 14)), 
+                                const SizedBox(width: 12), 
+                                Expanded(child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: selectedAccId, isExpanded: true, dropdownColor: sBg, items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)))).toList(), onChanged: (val) => setState(() => selectedAccId = val))))
+                              ]
+                            )
+                          )
+                        ), 
+                        const SizedBox(height: 20),
+                        
+                        if (selectedType != 'asset') ...[
+                          SizedBox(
+                            height: 40, 
+                            child: ListView(
+                              scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 20), 
+                              children: filteredCategories.map((cat) => GestureDetector(onTap: () => setState(() => selectedCategory = cat.name), child: Container(margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: selectedCategory == cat.name ? cat.color.withOpacity(0.2) : Colors.transparent, border: Border.all(color: selectedCategory == cat.name ? cat.color : gBorder), borderRadius: BorderRadius.circular(20)), child: Row(children: [Icon(cat.icon, color: selectedCategory == cat.name ? cat.color : sText, size: 16), const SizedBox(width: 6), Text(cat.name, style: TextStyle(color: selectedCategory == cat.name ? cat.color : sText, fontWeight: FontWeight.bold))])) )).toList()
+                            )
+                          ), 
+                          const SizedBox(height: 20), 
+                          Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), 
+                            child: TextField(style: TextStyle(color: pText, fontSize: 16), decoration: InputDecoration(hintText: t("Заметка (необязательно)", "Note (Optional)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none, icon: Icon(Icons.edit_note, color: sText)), onChanged: (val) => note = val)
+                          )
+                        ],
+                        
+                        if (selectedType == 'asset') ...[
+                          Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), 
+                            child: TextField(style: TextStyle(color: pText, fontSize: 16), decoration: InputDecoration(hintText: t("Название актива", "Asset name"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none, icon: Icon(Icons.diamond_outlined, color: sText)), onChanged: (val) => title = val, autofocus: false)
+                          ), 
+                          const SizedBox(height: 12), 
+                          Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), 
+                            child: TextField(style: TextStyle(color: pText, fontSize: 16), decoration: InputDecoration(hintText: t("Заметка (необязательно)", "Note (Optional)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none, icon: Icon(Icons.edit_note, color: sText)), onChanged: (val) => note = val)
+                          ), 
+                          const SizedBox(height: 16), 
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24), 
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+                              children: [
+                                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t("Уже владею", "Already own"), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text(t("Не списывать деньги со счета", "Do not deduct from balance"), style: TextStyle(color: sText, fontSize: 12))])), 
+                                Switch(value: isAlreadyOwned, onChanged: (val) => setState(()=> isAlreadyOwned = val), activeColor: getBtnColor())
+                              ]
+                            )
+                          )
+                        ],
+                        
+                        const SizedBox(height: 20), 
+                        Text(amount.replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ') + " $appCurrency", style: TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: getBtnColor()))
+                      ]
+                    )
+                  )
+                ),
+                
+                if (!isSystemKeyboardOpen) SafeArea(
+                  top: false, 
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.black.withOpacity(0.3), borderRadius: const BorderRadius.vertical(top: Radius.circular(30))), 
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min, 
+                      children: [
+                        Row(children: [_buildKey("1"), _buildKey("2"), _buildKey("3")]), 
+                        Row(children: [_buildKey("4"), _buildKey("5"), _buildKey("6")]), 
+                        Row(children: [_buildKey("7"), _buildKey("8"), _buildKey("9")]), 
+                        Row(children: [_buildKey("C"), _buildKey("0"), _buildKey("<")]), 
+                        const SizedBox(height: 12), 
+                        SizedBox(
+                          width: double.infinity, height: 56, 
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: getBtnColor(), foregroundColor: getBtnTextCol(), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                            onPressed: isSaving ? null : () { 
+                              setState(() => isSaving = true); 
+                              String finalType = selectedType; 
+                              if (selectedType == 'asset' && isAlreadyOwned) finalType = 'asset_owned'; 
+                              Navigator.pop(context, {'amount': int.parse(amount), 'type': finalType, 'category': selectedType == 'asset' ? 'Инвестиции' : (selectedCategory ?? 'Разное'), 'title': selectedType == 'asset' ? title : '', 'note': note, 'accountId': selectedAccId}); 
+                            }, 
+                            child: isSaving ? CircularProgressIndicator(color: getBtnTextCol()) : Text(selectedType == 'asset' ? t("Сохранить актив", "Save Asset") : t("Сохранить", "Save"), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
+                          )
+                        )
+                      ]
+                    )
+                  )
+                )
+              ]
+            )
+          )
+        )
+      )
+    );
+  }
+}
+class AnalyticsScreen extends StatefulWidget {
+  final List<Transaction> allTransactions; 
+  final List<Transaction> transactions; 
+  final DateTimeRange selectedDateRange; 
+  final Function(DateTimeRange) onDateRangeChanged;
+  
+  const AnalyticsScreen({super.key, required this.allTransactions, required this.transactions, required this.selectedDateRange, required this.onDateRangeChanged});
+  
+  @override 
+  State<AnalyticsScreen> createState() => _AnalyticsScreenState();
+}
+
+class _AnalyticsScreenState extends State<AnalyticsScreen> {
+  int touchedIndex = -1, turnoverMode = 0; 
+  bool showIncomeAnalysis = false;
+  
+  String formatMoney(int amount) => amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ');
+
+  void _showInfoPopup(BuildContext context, String title, String text) {
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (context) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            padding: const EdgeInsets.all(30), decoration: BoxDecoration(color: sBg), 
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                  const SizedBox(height: 30), 
+                  Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: appAccentColor.withOpacity(0.2), shape: BoxShape.circle), child: Icon(Icons.info_outline, color: appAccentColor, size: 48)), 
+                  const SizedBox(height: 24), 
+                  Text(title, style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold), textAlign: TextAlign.center), 
+                  const SizedBox(height: 16), 
+                  Text(text, style: TextStyle(color: sText, fontSize: 16, height: 1.5), textAlign: TextAlign.center), 
+                  const SizedBox(height: 40), 
+                  SizedBox(
+                    width: double.infinity, height: 56, 
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), 
+                      onPressed: () => Navigator.pop(context), 
+                      child: Text(t("Понятно", "Got it"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+                    )
+                  ), 
+                  const SizedBox(height: 20)
+                ]
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _showTurnoverHistory(BuildContext context, String title, List<Transaction> inList, List<Transaction> outList) {
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (context) => DefaultTabController(
+        length: 2, 
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              height: MediaQuery.of(context).size.height * 0.8, decoration: BoxDecoration(color: sBg), 
+              child: Column(
+                children: [
+                  const SizedBox(height: 12), 
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                  const SizedBox(height: 16), 
+                  Text(title, style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 16), 
+                  TabBar(
+                    indicatorColor: appAccentColor, labelColor: appAccentColor, unselectedLabelColor: sText, 
+                    tabs: [Tab(text: t("Поступления", "Incomes")), Tab(text: t("Списания", "Expenses"))]
+                  ), 
+                  Expanded(
+                    child: TabBarView(
+                      children: [
+                        inList.isEmpty ? Center(child: Text(t("Нет данных", "No data"), style: TextStyle(color: sText))) : ListView.builder(padding: const EdgeInsets.all(20), itemCount: inList.length, itemBuilder: (c, i) => _buildHistoryTile(inList[i], true)), 
+                        outList.isEmpty ? Center(child: Text(t("Нет данных", "No data"), style: TextStyle(color: sText))) : ListView.builder(padding: const EdgeInsets.all(20), itemCount: outList.length, itemBuilder: (c, i) => _buildHistoryTile(outList[i], false))
+                      ]
+                    )
+                  )
+                ]
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  Widget _buildHistoryTile(Transaction tx, bool isIncome) { 
+    return GlassCard(
+      onTap: () => _showReadOnlyTransaction(context, tx), margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), 
+      child: Row(
+        children: [
+          Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: tx.iconColor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(tx.icon, color: tx.iconColor, size: 24)), 
+          const SizedBox(width: 16), 
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, 
+              children: [
+                Text(tx.title.isNotEmpty && (tx.type == 'asset' || tx.type == 'asset_sale' || tx.type == 'margin_loss' || tx.type == 'margin_profit' || tx.type == 'sold_asset' || tx.type == 'transfer') ? tx.title : tx.category, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis), 
+                if (tx.note.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text(tx.note, style: TextStyle(color: sText, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis))
+              ]
+            )
+          ), 
+          Text('${isIncome ? "+" : "-"} ${formatMoney(tx.amount)} $appCurrency', style: TextStyle(color: isIncome ? Colors.green : pText, fontSize: 16, fontWeight: FontWeight.bold))
+        ]
+      )
+    ); 
+  }
+
+  void _showReadOnlyTransaction(BuildContext context, Transaction tx) {
+    String baseName = tx.title.replaceFirst('Продажа: ', '').replaceFirst('Убыток: ', '').replaceFirst('Прибыль: ', '');
+    var buyTx = widget.allTransactions.where((t) => (t.type == 'sold_asset' || t.type == 'asset' || t.type == 'asset_owned') && t.title == baseName).firstOrNull;
+    var sellTx = widget.allTransactions.where((t) => t.type == 'asset_sale' && t.title == 'Продажа: $baseName').firstOrNull;
+    
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (context) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            padding: const EdgeInsets.only(bottom: 40, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                  const SizedBox(height: 30), 
+                  Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: tx.iconColor.withOpacity(0.2), shape: BoxShape.circle), child: Icon(tx.icon, color: tx.iconColor, size: 40)), 
+                  const SizedBox(height: 16), 
+                  Text(tx.category, style: TextStyle(color: sText, fontSize: 16)), 
+                  const SizedBox(height: 8), 
+                  Text('${tx.type == "income" || tx.type == "asset_sale" || tx.type == "margin_profit" ? "+" : "-"} ${formatMoney(tx.amount)} $appCurrency', style: TextStyle(color: tx.type == "income" || tx.type == "asset_sale" || tx.type == "margin_profit" ? Colors.green : pText, fontSize: 32, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 24), 
+                  Container(
+                    padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.03) : Colors.white.withOpacity(0.03), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, 
+                      children: [
+                        if (tx.title.isNotEmpty) ...[ 
+                          Text(t("Название", "Title"), style: TextStyle(color: sText, fontSize: 12)), 
+                          const SizedBox(height: 4), 
+                          Text(tx.title, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), 
+                          const SizedBox(height: 16), 
+                          Divider(color: gBorder), 
+                          const SizedBox(height: 16) 
+                        ], 
+                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Дата операции', 'Date'), style: TextStyle(color: sText, fontSize: 16)), Text(formatCustomDate(tx.date), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))]), 
+                        if (buyTx != null && (tx.type == 'margin_loss' || tx.type == 'margin_profit' || tx.type == 'asset_sale' || tx.type == 'asset' || tx.type == 'sold_asset')) ...[
+                          const SizedBox(height: 16), 
+                          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Покупка', 'Bought'), style: TextStyle(color: sText, fontSize: 16)), Text('${formatMoney(buyTx.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))]), 
+                          if (sellTx != null) ...[
+                            const SizedBox(height: 16), 
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Продажа', 'Sold'), style: TextStyle(color: sText, fontSize: 16)), Text('${formatMoney(sellTx.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))]), 
+                            Padding(padding: const EdgeInsets.symmetric(vertical: 16), child: Divider(color: gBorder)), 
+                            Container(
+                              padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: (sellTx.amount - buyTx.amount) >= 0 ? Colors.green.withOpacity(0.1) : Colors.redAccent.withOpacity(0.1), borderRadius: BorderRadius.circular(12)), 
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+                                children: [
+                                  Text((sellTx.amount - buyTx.amount) >= 0 ? t('Чистая прибыль', 'Net Profit') : t('Убыток', 'Loss'), style: TextStyle(color: (sellTx.amount - buyTx.amount) >= 0 ? Colors.green : Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold)), 
+                                  Text('${(sellTx.amount - buyTx.amount) > 0 ? "+" : ""}${formatMoney((sellTx.amount - buyTx.amount))} $appCurrency', style: TextStyle(color: (sellTx.amount - buyTx.amount) >= 0 ? Colors.green : Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold))
+                                ]
+                              )
+                            )
+                          ]
+                        ] 
+                      ]
+                    )
+                  ), 
+                  const SizedBox(height: 40)
+                ]
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+  
+  @override 
+  Widget build(BuildContext context) {
+    List<Transaction> analyticsExpenses = widget.transactions.where((t) => t.type == 'expense').toList(); 
+    List<Transaction> analyticsIncomes = widget.transactions.where((t) => t.type == 'income').toList();
+    
+    int cashIn = 0; int cashOut = 0; 
+    List<Transaction> inList = []; List<Transaction> outList = [];
+
+    if (turnoverMode == 0 || turnoverMode == 2) { 
+      final inc = widget.transactions.where((t) => t.type == 'income').toList(); 
+      final exp = widget.transactions.where((t) => t.type == 'expense').toList(); 
+      cashIn += inc.fold(0, (s,t) => s+t.amount); cashOut += exp.fold(0, (s,t) => s+t.amount); 
+      inList.addAll(inc); outList.addAll(exp); 
+    }
+    
+    if (turnoverMode == 1 || turnoverMode == 2) { 
+      final aSale = widget.transactions.where((t) => t.type == 'asset_sale').toList(); 
+      final aBuy = widget.transactions.where((t) => t.type == 'asset' || t.type == 'sold_asset').toList(); 
+      cashIn += aSale.fold(0, (s,t) => s+t.amount); cashOut += aBuy.fold(0, (s,t) => s+t.amount); 
+      inList.addAll(aSale); outList.addAll(aBuy); 
+    }
+    
+    inList.sort((a,b) => b.date.compareTo(a.date)); 
+    outList.sort((a,b) => b.date.compareTo(a.date));
+    
+    final investCat = appCategories.firstWhere((c) => c.name == 'Инвестиции', orElse: () => CategoryItem('Инвестиции', Icons.trending_up, Colors.amber));
+    
+    for (var saleTx in widget.transactions.where((t) => t.type == 'asset_sale')) { 
+      String baseName = saleTx.title.replaceFirst('Продажа: ', ''); 
+      var buyTxList = widget.allTransactions.where((t) => (t.type == 'sold_asset' || t.type == 'asset' || t.type == 'asset_owned') && t.title == baseName); 
+      if (buyTxList.isNotEmpty) { 
+        int buyPrice = buyTxList.first.amount; int delta = saleTx.amount - buyPrice; 
+        if (delta < 0) analyticsExpenses.add(Transaction(id: 'margin_${saleTx.id}', title: 'Убыток: $baseName', note: '', amount: delta.abs(), type: 'margin_loss', category: 'Инвестиции', icon: Icons.trending_down, iconColor: investCat.color, date: saleTx.date)); 
+        else if (delta > 0) analyticsIncomes.add(Transaction(id: 'margin_${saleTx.id}', title: 'Прибыль: $baseName', note: '', amount: delta, type: 'margin_profit', category: 'Инвестиции', icon: Icons.trending_up, iconColor: investCat.color, date: saleTx.date)); 
+      } 
+    }
+
+    int totalExpense = 0; Map<String, int> expTotals = {}; 
+    for (var tx in analyticsExpenses) { totalExpense += tx.amount; expTotals[tx.category] = (expTotals[tx.category] ?? 0) + tx.amount; }
+    var sortedExps = expTotals.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    
+    int totalIncome = 0; Map<String, int> incTotals = {}; 
+    for (var tx in analyticsIncomes) { totalIncome += tx.amount; incTotals[tx.category] = (incTotals[tx.category] ?? 0) + tx.amount; }
+    var sortedIncs = incTotals.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    
+    int netProfit = totalIncome - totalExpense; 
+    var currentSorted = showIncomeAnalysis ? sortedIncs : sortedExps; 
+    int currentTotal = showIncomeAnalysis ? totalIncome : totalExpense;
+    
+    List<PieChartSectionData> chartSections = [];
+    if (currentSorted.isEmpty) { 
+      chartSections.add(PieChartSectionData(color: gBg, value: 1, title: '', radius: 30)); 
+    } else { 
+      for (int i = 0; i < currentSorted.length; i++) { 
+        var entry = currentSorted[i]; final isTouched = i == touchedIndex; final double radius = isTouched ? 45.0 : 35.0; double percent = (entry.value / currentTotal) * 100; 
+        final catObj = appCategories.firstWhere((c) => c.name == entry.key, orElse: () => CategoryItem(entry.key, Icons.inventory_2_outlined, Colors.grey.shade600)); 
+        Color sectionColor = entry.key == 'Инвестиции' ? investCat.color : catObj.color; 
+        chartSections.add(PieChartSectionData(color: sectionColor, value: entry.value.toDouble(), title: percent > 5 && !isTouched ? '${percent.toStringAsFixed(0)}%' : '', radius: radius, titleStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white))); 
+      } 
+    }
+    
+    String? selectedCatName = touchedIndex != -1 && currentSorted.isNotEmpty ? currentSorted[touchedIndex].key : null;
+    List<Transaction> drillDownTx = selectedCatName != null ? (showIncomeAnalysis ? analyticsIncomes : analyticsExpenses).where((t) => t.category == selectedCatName).toList() : [];
+
+    return SafeArea(
+      bottom: false, 
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.only(left: 20.0, right: 20.0, top: 20.0, bottom: 180.0), 
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start, 
+          children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(t('Аналитика', 'Analytics'), style: TextStyle(color: pText, fontSize: 32, fontWeight: FontWeight.bold, letterSpacing: -1))), DateRangePickerButton(selectedDateRange: widget.selectedDateRange, onRangeChanged: widget.onDateRangeChanged)]), 
+            const SizedBox(height: 24),
+            
+            Row(children: [Expanded(child: Text(t('Оборот (Cash Flow)', 'Cash Flow'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))), GestureDetector(onTap: () => _showInfoPopup(context, t("Оборот (Cash Flow)", "Cash Flow"), t("Оборот — это все фактические поступления и списания денег.\n\nЕсли вы купили машину за 100к, оборот покажет расход 100к. Если продали за 120к — поступление 120к.", "Cash flow is all actual receipts and debits. If you buy a car for 100k, it shows as 100k expense.")), child: Icon(Icons.info_outline, color: sText, size: 20))]), 
+            const SizedBox(height: 16),
+            
+            Container(
+              padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+              child: Row(
+                children: [
+                  Expanded(child: GestureDetector(onTap: () => setState(()=> turnoverMode = 0), child: Container(padding: const EdgeInsets.symmetric(vertical: 8), decoration: BoxDecoration(color: turnoverMode == 0 ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Базовый", "Base"), style: TextStyle(color: turnoverMode == 0 ? pText : sText, fontSize: 12, fontWeight: FontWeight.bold)))))), 
+                  Expanded(child: GestureDetector(onTap: () => setState(()=> turnoverMode = 1), child: Container(padding: const EdgeInsets.symmetric(vertical: 8), decoration: BoxDecoration(color: turnoverMode == 1 ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Активы", "Assets"), style: TextStyle(color: turnoverMode == 1 ? pText : sText, fontSize: 12, fontWeight: FontWeight.bold)))))), 
+                  Expanded(child: GestureDetector(onTap: () => setState(()=> turnoverMode = 2), child: Container(padding: const EdgeInsets.symmetric(vertical: 8), decoration: BoxDecoration(color: turnoverMode == 2 ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Общий", "Total"), style: TextStyle(color: turnoverMode == 2 ? pText : sText, fontSize: 12, fontWeight: FontWeight.bold))))))
+                ]
+              )
+            ), 
+            const SizedBox(height: 12),
+            
+            GlassCard(
+              onTap: () => _showTurnoverHistory(context, turnoverMode == 0 ? t("Базовый оборот", "Base Cash Flow") : (turnoverMode == 1 ? t("Оборот активов", "Assets Cash Flow") : t("Общий оборот", "Total Cash Flow")), inList, outList), 
+              padding: const EdgeInsets.all(20), 
+              child: Column(
+                children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(Icons.output_rounded, color: Colors.green, size: 20), const SizedBox(width: 12), Text(t('Поступления', 'Receipts'), style: TextStyle(color: sText, fontSize: 14))]), Text('+ ${formatMoney(cashIn)} $appCurrency', style: const TextStyle(color: Colors.green, fontSize: 16, fontWeight: FontWeight.bold))]), 
+                  const SizedBox(height: 16), Divider(color: gBorder), const SizedBox(height: 16), 
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(Icons.input_rounded, color: Colors.orange, size: 20), const SizedBox(width: 12), Text(t('Списания', 'Debits'), style: TextStyle(color: sText, fontSize: 14))]), Text('- ${formatMoney(cashOut)} $appCurrency', style: TextStyle(color: globalIsLightMode ? Colors.orange : Colors.amber, fontSize: 16, fontWeight: FontWeight.bold))])
+                ]
+              )
+            ), 
+            const SizedBox(height: 40),
+            
+            Row(children: [Expanded(child: Text(t('Бизнес-отчет (P&L)', 'P&L Report'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))), GestureDetector(onTap: () => _showInfoPopup(context, t("Бизнес-отчет (P&L)", "P&L Report"), t("Показывает вашу реальную финансовую эффективность (Доходы минус Расходы).\n\nПокупка актива здесь не считается расходом. Но если вы продали актив с прибылью (маржой), она добавится сюда как доход. Если с убытком — как расход.", "Shows real financial efficiency. Asset purchase is not an expense here.")), child: Icon(Icons.info_outline, color: sText, size: 20))]), 
+            const SizedBox(height: 16),
+            
+            GlassCard(
+              padding: const EdgeInsets.all(20), customBorder: netProfit >= 0 ? appAccentColor.withOpacity(0.3) : Colors.redAccent.withOpacity(0.3), 
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+                children: [
+                  Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t('Чистая прибыль', 'Net Profit'), style: TextStyle(color: sText, fontSize: 14)), const SizedBox(height: 4), Text('${netProfit > 0 ? "+" : ""}${formatMoney(netProfit)} $appCurrency', style: TextStyle(color: netProfit >= 0 ? appAccentColor : Colors.redAccent, fontSize: 24, fontWeight: FontWeight.bold))]), 
+                  Icon(netProfit >= 0 ? Icons.trending_up : Icons.trending_down, color: netProfit >= 0 ? appAccentColor : Colors.redAccent, size: 32)
+                ]
+              )
+            ), 
+            const SizedBox(height: 24),
+            
+            Container(
+              padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+              child: Row(
+                children: [
+                  Expanded(child: GestureDetector(onTap: () => setState(() { showIncomeAnalysis = false; touchedIndex = -1; }), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: !showIncomeAnalysis ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Расходы", "Expenses"), style: TextStyle(color: !showIncomeAnalysis ? pText : sText, fontWeight: FontWeight.bold)))))), 
+                  Expanded(child: GestureDetector(onTap: () => setState(() { showIncomeAnalysis = true; touchedIndex = -1; }), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: showIncomeAnalysis ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Доходы", "Incomes"), style: TextStyle(color: showIncomeAnalysis ? pText : sText, fontWeight: FontWeight.bold))))))
+                ]
+              )
+            ), 
+            const SizedBox(height: 24),
+            
+            SizedBox(
+              height: 220, 
+              child: Stack(
+                children: [
+                  PieChart(PieChartData(sectionsSpace: 4, centerSpaceRadius: 75, sections: chartSections, borderData: FlBorderData(show: false), pieTouchData: PieTouchData(touchCallback: (FlTouchEvent event, pieTouchResponse) { if (!event.isInterestedForInteractions) return; setState(() { if (pieTouchResponse == null || pieTouchResponse.touchedSection == null) { touchedIndex = -1; return; } touchedIndex = pieTouchResponse.touchedSection!.touchedSectionIndex; }); }))), 
+                  Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center, 
+                      children: [
+                        if (touchedIndex == -1 || currentSorted.isEmpty) ...[
+                          Text(showIncomeAnalysis ? t('Всего заработано', 'Total Earned') : t('Всего потрачено', 'Total Spent'), style: TextStyle(color: sText, fontSize: 12)), 
+                          const SizedBox(height: 4), 
+                          Text('${formatMoney(currentTotal)} $appCurrency', style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))
+                        ] else ...[
+                          Text(currentSorted[touchedIndex].key, style: TextStyle(color: sText, fontSize: 14)), 
+                          const SizedBox(height: 4), 
+                          Text('${formatMoney(currentSorted[touchedIndex].value)} $appCurrency', style: TextStyle(color: appCategories.firstWhere((c) => c.name == currentSorted[touchedIndex].key, orElse: () => CategoryItem('', Icons.block, pText)).color, fontSize: 22, fontWeight: FontWeight.bold)), 
+                          const SizedBox(height: 2), 
+                          Text('${((currentSorted[touchedIndex].value / currentTotal) * 100).toStringAsFixed(1)}%', style: TextStyle(color: sText, fontSize: 12))
+                        ] 
+                      ]
+                    )
+                  )
+                ]
+              )
+            ), 
+            const SizedBox(height: 40), 
+            
+            Text(selectedCatName == null ? t('По категориям', 'By Categories') : '${t("Операции", "Tx")}: $selectedCatName', style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+            const SizedBox(height: 16), 
+            if (currentSorted.isEmpty) Center(child: Padding(padding: const EdgeInsets.only(bottom: 40.0), child: Text(t("Нет данных", "No data"), style: TextStyle(color: sText)))), 
+            
+            if (selectedCatName == null) 
+              ...currentSorted.map((entry) { 
+                String catName = entry.key; int catAmount = entry.value; double percent = currentTotal > 0 ? catAmount / currentTotal : 0.0; final catObj = appCategories.firstWhere((c) => c.name == catName, orElse: () => CategoryItem(catName, Icons.inventory_2_outlined, Colors.grey.shade600)); bool isHighlighted = currentSorted.indexOf(entry) == touchedIndex; Color barColor = catObj.color; 
+                return GlassCard(
+                  margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), customBorder: isHighlighted ? barColor.withOpacity(0.5) : null, 
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+                        children: [
+                          Row(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: barColor.withOpacity(0.2), borderRadius: BorderRadius.circular(10)), child: Icon(catObj.icon, color: barColor, size: 20)), const SizedBox(width: 12), Text(catObj.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500))]), 
+                          Text('${formatMoney(catAmount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))
+                        ]
+                      ), 
+                      const SizedBox(height: 12), 
+                      Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * percent, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(4), boxShadow: isHighlighted ? [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)] : [])))])
+                    ]
+                  )
+                ); 
+              }).toList()
+            else 
+              ...drillDownTx.map((tx) => GlassCard(
+                onTap: () => _showReadOnlyTransaction(context, tx), margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), 
+                child: Row(
+                  children: [
+                    Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: tx.iconColor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(tx.icon, color: tx.iconColor, size: 24)), 
+                    const SizedBox(width: 16), 
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(tx.title.isNotEmpty && (tx.type == 'asset' || tx.type == 'margin_loss' || tx.type == 'margin_profit' || tx.type == 'sold_asset') ? tx.title : tx.category, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis)])), 
+                    Text('${showIncomeAnalysis ? "+" : "-"} ${formatMoney(tx.amount)} $appCurrency', style: TextStyle(color: showIncomeAnalysis ? Colors.green : pText, fontSize: 16, fontWeight: FontWeight.bold))
+                  ]
+                )
+              )).toList()
+          ]
+        )
+      )
+    );
+  }
+}
+
+class SavingHabit { 
+  String title; int savePerDay; int timesResisted; 
+  SavingHabit(this.title, this.savePerDay, {this.timesResisted = 0}); 
+}
+
+class BudgetLimit { 
+  String category; int limit; int spent; double avgTx; 
+  BudgetLimit(this.category, this.limit, this.spent, this.avgTx); 
+}
+
+class PlanScreen extends StatefulWidget { 
+  final List<Transaction> allTransactions; 
+  final int totalBalance; 
+  const PlanScreen({super.key, required this.allTransactions, required this.totalBalance}); 
+  @override State<PlanScreen> createState() => _PlanScreenState(); 
+}
+
+class _PlanScreenState extends State<PlanScreen> {
+  List<SavingHabit> activeHabits = []; 
+  List<SavingHabit> suggestions = []; 
+  Map<String, int> limits = {};
+  
+  @override void initState() { super.initState(); _loadLimits(); _generateAIRecommendations(); }
+  
+  Future<void> _loadLimits() async { 
+    final prefs = await SharedPreferences.getInstance(); 
+    setState(() { limits = {}; for (var cat in appCategories) { int? l = prefs.getInt('limit_${cat.name}'); if (l != null) limits[cat.name] = l; } }); 
+  }
+  
+  void _generateAIRecommendations() { 
+    Map<String, int> expTotals = {}; 
+    for (var tx in widget.allTransactions.where((t) => t.type == 'expense')) { expTotals[tx.category] = (expTotals[tx.category] ?? 0) + tx.amount; } 
+    if (expTotals.isNotEmpty) { 
+      var topCat = expTotals.entries.reduce((a, b) => a.value > b.value ? a : b).key; 
+      int suggestionAmount = (expTotals[topCat]! * 0.1 / 30).round(); if(suggestionAmount < 100) suggestionAmount = 500; 
+      bool exists = suggestions.any((s) => s.title.contains(topCat)); 
+      if (!exists) setState(() { suggestions.insert(0, SavingHabit('${t("Меньше трат на", "Spend less on")}: $topCat', suggestionAmount)); }); 
+    } 
+    if(suggestions.isEmpty) { suggestions = [SavingHabit(t('Один кофе вместо двух', 'One coffee instead of two'), 1500), SavingHabit(t('Метро вместо такси', 'Subway instead of taxi'), 2500)]; } 
+  }
+  
+  Future<void> _setLimit(String catName, int limitAmount) async { 
+    final prefs = await SharedPreferences.getInstance(); 
+    if (limitAmount <= 0) { await prefs.remove('limit_$catName'); setState(() => limits.remove(catName)); } 
+    else { await prefs.setInt('limit_$catName', limitAmount); setState(() => limits[catName] = limitAmount); } 
+  }
+
+  void _showAddLimitSheet() {
+    TextEditingController amtC = TextEditingController(); 
+    String selectedCat = appCategories.firstWhere((c) => c.scope == 'expense' || c.scope == 'both').name;
+    
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => StatefulBuilder(
+        builder: (context, setModalState) => ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30), Text(t("Установить Лимит", "Set Limit"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 24), 
+                    SizedBox(
+                      height: 40, 
+                      child: ListView(
+                        scrollDirection: Axis.horizontal, 
+                        children: appCategories.where((c) => c.scope == 'expense' || c.scope == 'both').map((cat) => GestureDetector(onTap: () => setModalState(() => selectedCat = cat.name), child: Container(margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: selectedCat == cat.name ? cat.color.withOpacity(0.2) : Colors.transparent, border: Border.all(color: selectedCat == cat.name ? cat.color : gBorder), borderRadius: BorderRadius.circular(20)), child: Row(children: [Icon(cat.icon, color: selectedCat == cat.name ? cat.color : sText, size: 16), const SizedBox(width: 6), Text(cat.name, style: TextStyle(color: selectedCat == cat.name ? cat.color : sText, fontWeight: FontWeight.bold))])) )).toList()
+                      )
+                    ), 
+                    const SizedBox(height: 24), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 24), 
+                    Row(
+                      children: [
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                        const SizedBox(width: 12), 
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { int val = int.tryParse(amtC.text) ?? 0; _setLimit(selectedCat, val); Navigator.pop(c); }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                      ]
+                    ), 
+                    const SizedBox(height: 40)
+                  ]
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _showAddGoalSheet() {
+    TextEditingController nameC = TextEditingController(), targetC = TextEditingController(); 
+    Color selectedC = availableColors[0]; IconData selectedI = Icons.directions_car;
+    
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => StatefulBuilder(
+        builder: (context, setModalState) => ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30), Text(t("Новая Цель", "New Goal"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 24), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Название (Например: Машина)", "Name (e.g. Car)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 16), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: targetC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Целевая сумма", "Target Amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 24), 
+                    Row(
+                      children: [
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                        const SizedBox(width: 12), 
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameC.text.isNotEmpty && targetC.text.isNotEmpty) { setState(() => myGoals.add(BigGoal(id: DateTime.now().millisecondsSinceEpoch.toString(), name: nameC.text, targetAmount: int.parse(targetC.text), savedAmount: 0, color: selectedC, icon: selectedI))); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                      ]
+                    ), 
+                    const SizedBox(height: 40)
+                  ]
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _addMoneyToGoal(BigGoal goal) {
+    TextEditingController amtC = TextEditingController();
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                  const SizedBox(height: 30), Text(t("Пополнить копилку", "Add to Savings"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 8), Text(goal.name, style: TextStyle(color: sText, fontSize: 16)), 
+                  const SizedBox(height: 24), 
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                  const SizedBox(height: 24), 
+                  Row(
+                    children: [
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      const SizedBox(width: 12), 
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { int val = int.tryParse(amtC.text) ?? 0; if (val > 0) { setState(() { goal.savedAmount += val; }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Пополнить", "Top up"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                    ]
+                  ), 
+                  const SizedBox(height: 40)
+                ]
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _addCustomHabit() {
+    TextEditingController titleC = TextEditingController(), amtC = TextEditingController();
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                  const SizedBox(height: 30), Text(t("Своя цель", "Custom Goal"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 24), 
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: titleC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Например: Без фастфуда", "e.g. No fastfood"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                  const SizedBox(height: 16), 
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Экономия за 1 раз", "Save amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                  const SizedBox(height: 24), 
+                  Row(
+                    children: [
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      const SizedBox(width: 12), 
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(titleC.text.isNotEmpty && amtC.text.isNotEmpty) { setState(() => activeHabits.add(SavingHabit(titleC.text, int.parse(amtC.text)))); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                    ]
+                  ), 
+                  const SizedBox(height: 40)
+                ]
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _showAIChat() {
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            height: MediaQuery.of(context).size.height * 0.85, padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), decoration: BoxDecoration(color: sBg), 
+            child: Column(
+              children: [
+                const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 20), Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.auto_awesome, color: appAccentColor), const SizedBox(width: 8), Text("FlowIQ AI", style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))]), 
+                const SizedBox(height: 20), 
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.all(20), 
+                    children: [
+                      Align(alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20).copyWith(topLeft: Radius.zero)), child: Text(t("Привет! Я ваш финансовый ИИ-ассистент. О чем поговорим?", "Hi! I am your financial AI assistant."), style: TextStyle(color: pText, fontSize: 16)))), 
+                      const SizedBox(height: 20), 
+                      Align(alignment: Alignment.centerRight, child: Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: appAccentColor.withOpacity(0.2), borderRadius: BorderRadius.circular(20).copyWith(topRight: Radius.zero)), child: Text(t("Смогу ли я накопить 300 000 ₸ к отпуску?", "Can I save 300k for vacation?"), style: TextStyle(color: pText, fontSize: 16)))), 
+                      const SizedBox(height: 20), 
+                      Align(alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20).copyWith(topLeft: Radius.zero)), child: Text(t("Да, если вы урежете лимит на 'Рестораны' на 15 000 и будете соблюдать вызовы.\n\n(Интеграция ChatGPT API в разработке...)", "Yes, if you cut Restaurants limit and follow habits.\n\n(ChatGPT API integration in progress...)"), style: TextStyle(color: pText, fontSize: 16))))
+                    ]
+                  )
+                ), 
+                Container(
+                  padding: const EdgeInsets.all(20), 
+                  child: Row(
+                    children: [
+                      Expanded(child: Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(24)), child: TextField(style: TextStyle(color: pText), decoration: InputDecoration(hintText: t("Сообщение...", "Message..."), hintStyle: TextStyle(color: sText), border: InputBorder.none)))), 
+                      const SizedBox(width: 12), 
+                      CircleAvatar(radius: 24, backgroundColor: appAccentColor, child: Icon(Icons.send, color: accentTextColor))
+                    ]
+                  )
+                )
+              ]
+            )
+          )
+        )
+      )
+    );
+  }
+
+  @override 
+  Widget build(BuildContext context) {
+    List<BudgetLimit> budgets = [];
+    for (var catName in limits.keys) { 
+      final txs = widget.allTransactions.where((t) => t.category == catName && t.type == 'expense' && t.date.month == DateTime.now().month && t.date.year == DateTime.now().year).toList(); 
+      int spent = txs.fold(0, (s, t) => s + t.amount); double avg = txs.isEmpty ? 0 : spent / txs.length; 
+      budgets.add(BudgetLimit(catName, limits[catName]!, spent, avg)); 
+    }
+
+    DateTime now = DateTime.now(); int daysInMonth = DateTime(now.year, now.month + 1, 0).day; int daysLeft = daysInMonth - now.day + 1;
+    int safeDailyLimit = widget.totalBalance > 0 ? (widget.totalBalance / daysLeft).floor() : 0;
+
+    Widget proContent = Scaffold(
+      backgroundColor: Colors.transparent,
+      floatingActionButton: Padding(padding: const EdgeInsets.only(bottom: 80.0), child: FloatingActionButton.extended(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), onPressed: _showAIChat, icon: const Icon(Icons.auto_awesome), label: Text(t("Чат с ИИ", "AI Chat"), style: const TextStyle(fontWeight: FontWeight.bold)))),
+      body: SafeArea(
+        bottom: false, 
+        child: ListView(
+          padding: const EdgeInsets.only(left: 20.0, right: 20.0, top: 20.0, bottom: 180.0), 
+          children: [
+            Text(t('План и Цели', 'Plan & Goals'), style: TextStyle(color: pText, fontSize: 32, fontWeight: FontWeight.bold, letterSpacing: -1)), 
+            const SizedBox(height: 24),
+            
+            GlassCard(
+              padding: const EdgeInsets.all(24), customBorder: appAccentColor.withOpacity(0.5), 
+              child: Column(
+                children: [
+                  Text(t("Сегодня безопасно потратить:", "Safe to spend today:"), style: TextStyle(color: sText, fontSize: 16)), 
+                  const SizedBox(height: 8), 
+                  Text('${formatMoney(safeDailyLimit)} $appCurrency', style: TextStyle(color: appAccentColor, fontSize: 46, fontWeight: FontWeight.bold, letterSpacing: -1)), 
+                  const SizedBox(height: 8), 
+                  Text("${t("Из расчета баланса на", "Based on balance for")} $daysLeft ${t("дн.", "days.")}", style: TextStyle(color: sText, fontSize: 12))
+                ]
+              )
+            ), 
+            const SizedBox(height: 40),
+
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(t('Копилка', 'Piggy Bank'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))), IconButton(icon: Icon(Icons.add_circle, color: appAccentColor, size: 28), onPressed: _showAddGoalSheet)]), 
+            const SizedBox(height: 16),
+            
+            if (myGoals.isEmpty) 
+              Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(t("Создайте цель (например, на отпуск)", "Create a goal (e.g. Vacation)"), textAlign: TextAlign.center, style: TextStyle(color: sText)))) 
+            else 
+              SizedBox(
+                height: 140, 
+                child: ListView(
+                  scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                  children: myGoals.map((g) { 
+                    double pct = g.savedAmount / g.targetAmount; if(pct>1) pct=1; 
+                    return GlassCard(
+                      onTap: () => _addMoneyToGoal(g), margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.all(16), 
+                      child: SizedBox(
+                        width: 250, 
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
+                          children: [
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(g.icon, color: appAccentColor, size: 20), const SizedBox(width: 8), Text(g.name, style: TextStyle(color: pText, fontWeight: FontWeight.bold))]), Text('${(pct*100).toInt()}%', style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold))]), 
+                            const SizedBox(height: 16), 
+                            Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: appAccentColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: appAccentColor.withOpacity(0.5), blurRadius: 8)])))]), 
+                            const SizedBox(height: 12), 
+                            Text('${formatMoney(g.savedAmount)} / ${formatMoney(g.targetAmount)} $appCurrency', style: TextStyle(color: sText, fontSize: 12))
+                          ]
+                        )
+                      )
+                    ); 
+                  }).toList()
+                )
+              ), 
+            const SizedBox(height: 40),
+
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(t('Лимиты на месяц', 'Monthly Limits'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))), IconButton(icon: Icon(Icons.tune, color: appAccentColor, size: 24), onPressed: _showAddLimitSheet)]), 
+            const SizedBox(height: 16),
+            
+            if (budgets.isEmpty) 
+              Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(t("Установите лимиты, чтобы контролировать бюджет", "Set limits to control budget"), textAlign: TextAlign.center, style: TextStyle(color: sText)))) 
+            else 
+              SizedBox(
+                height: 130, 
+                child: ListView(
+                  scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                  children: budgets.map((b) { 
+                    double percent = b.spent / b.limit; if (percent > 1.0) percent = 1.0; 
+                    Color barColor = percent >= 1.0 ? Colors.redAccent : (percent > 0.75 ? Colors.orange : appAccentColor); 
+                    int left = b.limit - b.spent; String hint = t("Вы в графике", "On track"); 
+                    if (left <= 0) hint = "${t("Превышен на", "Exceeded by")} ${formatMoney(left.abs())} $appCurrency!"; 
+                    else if (percent > 0.75 && b.avgTx > 0) hint = "${t("Осталось на", "Left for")} ~${(left / b.avgTx).floor()} ${t("раз", "times")}."; 
+                    final catObj = appCategories.firstWhere((c) => c.name == b.category, orElse: () => CategoryItem(b.category, Icons.category, Colors.grey)); 
+                    return GlassCard(
+                      margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.all(16), 
+                      child: SizedBox(
+                        width: 250, 
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
+                          children: [
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(catObj.icon, color: catObj.color, size: 16), const SizedBox(width: 8), Text(b.category, style: TextStyle(color: pText, fontWeight: FontWeight.bold))]), Text('${formatMoney(b.spent)} / ${formatMoney(b.limit)}', style: TextStyle(color: sText, fontSize: 12))]), 
+                            const SizedBox(height: 16), 
+                            Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * percent, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
+                            const SizedBox(height: 12), 
+                            Text(hint, style: TextStyle(color: barColor, fontSize: 12, fontWeight: FontWeight.bold))
+                          ]
+                        )
+                      )
+                    ); 
+                  }).toList()
+                )
+              ), 
+            const SizedBox(height: 40),
+            
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(t('Микро-Привычки', 'Micro Habits'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))), IconButton(icon: Icon(Icons.add_circle, color: appAccentColor, size: 28), onPressed: _addCustomHabit)]), 
+            const SizedBox(height: 16),
+            
+            if (activeHabits.isEmpty) 
+              Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(t("У вас пока нет активных целей.", "No active habits yet."), textAlign: TextAlign.center, style: TextStyle(color: sText)))) 
+            else 
+              SizedBox(
+                height: 160, 
+                child: ListView(
+                  scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                  children: activeHabits.map((h) => GlassCard(
+                    margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.all(20), 
+                    child: SizedBox(
+                      width: 260, 
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start, 
+                        children: [
+                          Row(children: [Expanded(child: Text(h.title, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)), GestureDetector(onTap: () => setState(() => activeHabits.remove(h)), child: const Icon(Icons.close, color: Colors.redAccent, size: 20))]), 
+                          const SizedBox(height: 4), 
+                          Text('${t("Экономит", "Saves")}: ${formatMoney(h.savePerDay)} $appCurrency', style: TextStyle(color: sText, fontSize: 14)), 
+                          const SizedBox(height: 4), 
+                          Text('${t("Выдержали", "Resisted")}: ${h.timesResisted} ${t("раз", "times")}', style: TextStyle(color: appAccentColor, fontSize: 14, fontWeight: FontWeight.bold)), 
+                          const Spacer(), 
+                          SizedBox(
+                            width: double.infinity, height: 40, 
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), 
+                              onPressed: () { 
+                                setState(() { h.timesResisted++; }); 
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('🎉 ${t("Отлично! +", "Great! +")}${formatMoney(h.savePerDay)} $appCurrency. ${t("Закиньте их в копилку!", "Add it to your piggy bank!")}'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating)); 
+                              }, 
+                              child: Text(t("Я удержался!", "I resisted!"), style: const TextStyle(fontWeight: FontWeight.bold))
+                            )
+                          )
+                        ]
+                      )
+                    )
+                  )).toList()
+                )
+              ), 
+            const SizedBox(height: 40),
+            
+            Text(t('ИИ рекомендует', 'AI Recommends'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+            const SizedBox(height: 16),
+            
+            SizedBox(
+              height: 180, 
+              child: ListView(
+                scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+                children: suggestions.map((s) => GlassCard(
+                  margin: const EdgeInsets.only(right: 16), padding: const EdgeInsets.all(20), 
+                  child: SizedBox(
+                    width: 160, 
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, 
+                      children: [
+                        Expanded(child: Text(s.title, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold), maxLines: 2)), 
+                        Text('+ ${formatMoney(s.savePerDay)} $appCurrency/${t("раз", "time")}', style: const TextStyle(color: Colors.green, fontSize: 14, fontWeight: FontWeight.bold)), 
+                        const SizedBox(height: 16), 
+                        SizedBox(
+                          width: double.infinity, height: 40, 
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: gBorder))), 
+                            onPressed: () => setState(() { activeHabits.add(SavingHabit(s.title, s.savePerDay)); suggestions.remove(s); }), 
+                            child: Text(t("Взять вызов", "Take challenge"), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))
+                          )
+                        )
+                      ]
+                    )
+                  )
+                )).toList()
+              )
+            )
+          ]
+        )
+      )
+    );
+
+    if (isProUser) return proContent;
+    return Stack(
+      children: [ 
+        Opacity(opacity: 0.3, child: proContent), 
+        Positioned.fill(child: ClipRRect(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5), child: Container(color: Colors.transparent)))), 
+        Positioned.fill(
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center, 
+              children: [
+                Icon(Icons.lock, color: appAccentColor, size: 48), 
+                const SizedBox(height: 16), 
+                Text(t('Бюджеты, Трекер экономии и ИИ\nдоступны только в PRO', 'Budgets, Habits & AI\nare PRO features'), textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)), 
+                const SizedBox(height: 24), 
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                  onPressed: () async { 
+                    final p = await SharedPreferences.getInstance(); await p.setBool('is_pro_user', true); 
+                    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const RootScreen())); 
+                  }, 
+                  child: Text(t("Купить PRO", "Get PRO"), style: TextStyle(color: accentTextColor, fontSize: 16, fontWeight: FontWeight.bold))
+                ) 
+              ]
+            )
+          )
+        ) 
+      ]
+    );
+  }
+}
+class ProfileScreen extends StatefulWidget { 
+  final String? currentBg; 
+  final Function(String?) onBgChanged; 
+  final int streak; 
+  final String level; 
+  final VoidCallback onSettingsUpdated; 
+  final VoidCallback onRefresh;
+  const ProfileScreen({super.key, this.currentBg, required this.onBgChanged, required this.streak, required this.level, required this.onSettingsUpdated, required this.onRefresh}); 
+  @override State<ProfileScreen> createState() => _ProfileScreenState(); 
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  bool pushNotifications = true; bool useFaceId = false;
+
+  @override void initState() { super.initState(); _loadSettings(); }
+  Future<void> _loadSettings() async { final prefs = await SharedPreferences.getInstance(); setState(() { useFaceId = prefs.getBool('use_face_id') ?? false; }); }
+
+  Future<void> _toggleFaceId(bool val) async {
+    if (!isProUser) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Доступно в PRO версии', 'PRO feature')), backgroundColor: sBg)); return; }
+    if (val) {
+      String tempPin = "";
+      showModalBottomSheet(
+        context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+        builder: (c) => StatefulBuilder(
+          builder: (context, setModalState) {
+            Widget buildPinBtn(String digit) { 
+              return Expanded(
+                child: InkWell(
+                  onTap: () { 
+                    setModalState(() { 
+                      if (digit == "<") { if (tempPin.isNotEmpty) tempPin = tempPin.substring(0, tempPin.length - 1); } 
+                      else { if (tempPin.length < 4) tempPin += digit; } 
+                    }); 
+                  }, 
+                  borderRadius: BorderRadius.circular(16), 
+                  child: Container(height: 60, alignment: Alignment.center, child: digit == "<" ? Icon(Icons.backspace_outlined, color: pText) : Text(digit, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500, color: pText)))
+                )
+              ); 
+            }
+            return ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+                child: Container(
+                  padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min, 
+                      children: [
+                        Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                        const SizedBox(height: 30), 
+                        Text(t("Создайте ПИН-код", "Create PIN"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                        const SizedBox(height: 8), 
+                        Text(t("Резервный вход", "Fallback login"), style: TextStyle(color: sText, fontSize: 14)), 
+                        const SizedBox(height: 32), 
+                        Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(4, (index) => Container(margin: const EdgeInsets.symmetric(horizontal: 12), width: 16, height: 16, decoration: BoxDecoration(shape: BoxShape.circle, color: index < tempPin.length ? appAccentColor : Colors.grey.withOpacity(0.3))))), 
+                        const SizedBox(height: 32), 
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 20), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.03) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(24)), 
+                          child: Column(
+                            children: [
+                              Row(children: [buildPinBtn("1"), buildPinBtn("2"), buildPinBtn("3")]), 
+                              Row(children: [buildPinBtn("4"), buildPinBtn("5"), buildPinBtn("6")]), 
+                              Row(children: [buildPinBtn("7"), buildPinBtn("8"), buildPinBtn("9")]), 
+                              Row(children: [buildPinBtn("C"), buildPinBtn("0"), buildPinBtn("<")])
+                            ]
+                          )
+                        ), 
+                        const SizedBox(height: 24), 
+                        Row(
+                          children: [
+                            Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                            const SizedBox(width: 12), 
+                            Expanded(
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                                onPressed: () async { 
+                                  if(tempPin.length == 4) { 
+                                    final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_pin', tempPin); await prefs.setBool('use_biometrics', true); await prefs.setBool('use_face_id', true); setState(() => useFaceId = true); Navigator.pop(c); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Защита включена!', 'Protection enabled!')), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating)); 
+                                  } 
+                                }, 
+                                child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+                              )
+                            )
+                          ]
+                        ), 
+                        const SizedBox(height: 40)
+                      ]
+                    )
+                  )
+                )
+              )
+            );
+          }
+        )
+      );
+    } else { 
+      final prefs = await SharedPreferences.getInstance(); await prefs.setBool('use_face_id', false); await prefs.remove('app_pin'); setState(() => useFaceId = false); 
+    }
+  }
+
+  void _openWhatsApp() async { final Uri url = Uri.parse('whatsapp://send?phone=87474993818'); if (await canLaunchUrl(url)) { await launchUrl(url); } else { final Uri webUrl = Uri.parse('https://wa.me/87474993818'); if (await canLaunchUrl(webUrl)) { await launchUrl(webUrl, mode: LaunchMode.externalApplication); } } }
+  
+  Widget _buildSwitchTile(IconData icon, String title, bool value, Function(bool) onChanged, {bool isProFeature = false}) { 
+    return GlassCard(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(children: [Icon(icon, color: sText, size: 24), const SizedBox(width: 16), Expanded(child: Row(children: [Expanded(child: Text(title, style: TextStyle(color: pText, fontSize: 16))), if(isProFeature && !isProUser) Padding(padding: const EdgeInsets.only(left: 8), child: Icon(Icons.lock, color: appAccentColor, size: 14))])), Switch(value: value, onChanged: onChanged, activeColor: appAccentColor, activeTrackColor: appAccentColor.withOpacity(0.3), inactiveThumbColor: Colors.grey, inactiveTrackColor: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1))])); 
+  }
+  
+  Widget _buildActionTile(IconData icon, String title, {bool isDestructive = false, Color? iconColor, VoidCallback? onTap}) { 
+    return GlassCard(onTap: onTap, margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), child: Row(children: [Icon(icon, color: isDestructive ? const Color(0xFFFF3366) : (iconColor ?? sText), size: 24), const SizedBox(width: 16), Expanded(child: Text(title, style: TextStyle(color: isDestructive ? const Color(0xFFFF3366) : pText, fontSize: 16, fontWeight: isDestructive ? FontWeight.bold : FontWeight.normal))), if (!isDestructive) Icon(Icons.chevron_right, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.2), size: 24)])); 
+  }
+
+  @override 
+  Widget build(BuildContext context) {
+    return SafeArea(
+      bottom: false, 
+      child: ListView(
+        padding: const EdgeInsets.only(left: 20.0, right: 20.0, top: 20.0, bottom: 180.0), 
+        children: [
+          const SizedBox(height: 10), 
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t('Профиль', 'Profile'), style: TextStyle(color: pText, fontSize: 32, fontWeight: FontWeight.bold, letterSpacing: -1)), if(isProUser) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: appAccentColor.withOpacity(0.2), borderRadius: BorderRadius.circular(8)), child: Text('PRO', style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold, fontSize: 12)))]), 
+          const SizedBox(height: 24), 
+          
+          GlassCard(
+            padding: const EdgeInsets.all(20), 
+            child: Row(
+              children: [
+                Container(width: 60, height: 60, decoration: BoxDecoration(color: appAccentColor.withOpacity(0.2), shape: BoxShape.circle), child: Center(child: Text("ID", style: TextStyle(color: appAccentColor, fontSize: 20, fontWeight: FontWeight.bold)))), 
+                const SizedBox(width: 16), 
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t("Мой Аккаунт", "My Account"), style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text("user@flowiq.app", style: TextStyle(color: sText, fontSize: 14))])), 
+                Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(8)), child: Text(widget.level, style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold, fontSize: 12)))
+              ]
+            )
+          ), 
+          const SizedBox(height: 40), 
+          
+          Text(t('УПРАВЛЕНИЕ', 'MANAGEMENT'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+          const SizedBox(height: 16), 
+          _buildActionTile(Icons.account_balance_wallet, t('Мои счета (Баланс)', 'My Accounts'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => AccountsManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          _buildActionTile(Icons.autorenew, t('Повторяющиеся платежи', 'Recurring Payments'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => RecurringManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          _buildActionTile(Icons.category_outlined, t('Категории', 'Categories'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => CategoryManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          const SizedBox(height: 32),
+
+          Text(t('ВНЕШНИЙ ВИД И ЯЗЫК', 'APPEARANCE & LANG'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+          const SizedBox(height: 16), 
+          _buildActionTile(Icons.language, t('Язык и Валюта', 'Language & Currency'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => LocalizationScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          const SizedBox(height: 12),
+          
+          SizedBox(
+            height: 80, 
+            child: ListView(
+              scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
+              children: [...premiumWallpapers.asMap().entries.map((entry) { 
+                int idx = entry.key; String url = entry.value; bool isLocked = !isProUser && idx > 2; 
+                return GestureDetector(
+                  onTap: () { if (isLocked) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Доступно в PRO', 'PRO feature')), backgroundColor: sBg)); return; } widget.onBgChanged(url); }, 
+                  child: Stack(
+                    alignment: Alignment.center, 
+                    children: [
+                      Container(margin: const EdgeInsets.only(right: 12), width: 60, decoration: BoxDecoration(color: url == 'white_solid' ? Colors.white : (url == 'black_solid' ? Colors.black : null), shape: BoxShape.circle, border: Border.all(color: widget.currentBg == url ? appAccentColor : (globalIsLightMode ? Colors.black12 : Colors.white24), width: 2), image: (url != 'white_solid' && url != 'black_solid') ? DecorationImage(image: NetworkImage(url), fit: BoxFit.cover) : null)), 
+                      if(isLocked) Container(margin: const EdgeInsets.only(right: 12), width: 60, height: 60, decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), shape: BoxShape.circle), child: Icon(Icons.lock, color: appAccentColor, size: 20))
+                    ]
+                  )
+                ); 
+              }).toList()]
+            )
+          ), 
+          const SizedBox(height: 16), 
+          
+          _buildSwitchTile(Icons.blur_on, t('Размытие обоев', 'Wallpaper Blur'), globalIsBgBlurred, (val) async { final prefs = await SharedPreferences.getInstance(); await prefs.setBool('bg_blur', val); widget.onSettingsUpdated(); }), 
+          const SizedBox(height: 32), 
+          
+          Text(t('НАСТРОЙКИ', 'SETTINGS'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+          const SizedBox(height: 16), 
+          _buildActionTile(Icons.touch_app, t('Быстрое добавление (Двойной тап)', 'Double Tap Quick Add'), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DoubleTapSetupScreen(currentBg: widget.currentBg)))),
+          _buildSwitchTile(Icons.shield_outlined, t('Защита приложения', 'App Protection'), useFaceId, _toggleFaceId, isProFeature: true), 
+          _buildSwitchTile(Icons.notifications_active_outlined, t('Умные уведомления', 'Smart Notifications'), pushNotifications, (val) { if(!isProUser){ ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Доступно в PRO', 'PRO feature')), backgroundColor: sBg)); return; } setState(() => pushNotifications = val); }, isProFeature: true), 
+          const SizedBox(height: 32), 
+          
+          Text(t('ПОДДЕРЖКА', 'SUPPORT'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+          const SizedBox(height: 16), 
+          _buildActionTile(Icons.star_rounded, t('Оценить FlowIQ', 'Rate FlowIQ'), iconColor: Colors.amber), 
+          _buildActionTile(Icons.chat_bubble_outline, t('Написать в поддержку', 'Contact Support'), onTap: _openWhatsApp), 
+          _buildActionTile(Icons.logout, t('Выйти из аккаунта', 'Logout'), isDestructive: true), 
+          const SizedBox(height: 40),
+          
+          _buildActionTile(Icons.delete_forever, 'Сброс приложения (Dev Mode)', isDestructive: true, onTap: () { 
+            showDialog(
+              context: context, 
+              builder: (c) => AlertDialog(
+                backgroundColor: sBg, title: Text("Сброс всех данных", style: TextStyle(color: pText)), 
+                content: Text("Это удалит ВСЕ транзакции из базы, обнулит подписку PRO, обои и дни входа.\nПродолжить?", style: TextStyle(color: sText)), 
+                actions: [
+                  TextButton(onPressed: ()=>Navigator.pop(c), child: const Text("Отмена")), 
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), 
+                    onPressed: () async { 
+                      Navigator.pop(c); final prefs = await SharedPreferences.getInstance(); await prefs.clear(); 
+                      await Supabase.instance.client.from('transactions').delete().gte('amount', 0); 
+                      appCategories = defaultCategories.map((cat) => CategoryItem(cat.name, cat.icon, cat.color, scope: cat.scope)).toList(); 
+                      isProUser = false; myAccounts = [BankAccount(id: '1', name: t('Наличные', 'Cash'), balance: 0, color: Colors.green, icon: Icons.payments)]; myGoals = []; myRecurring = []; 
+                      saveLocalData(); widget.onSettingsUpdated(); widget.onRefresh(); 
+                      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const RootScreen())); 
+                    }, 
+                    child: const Text("Сбросить", style: TextStyle(color: Colors.white))
+                  )
+                ]
+              )
+            ); 
+          })
+        ]
+      )
+    );
+  }
+}
+
+// === НОВЫЕ ЭКРАНЫ ИЗ НАСТРОЕК ===
+
+class LocalizationScreen extends StatefulWidget { 
+  final String? currentBg; const LocalizationScreen({super.key, this.currentBg}); 
+  @override State<LocalizationScreen> createState() => _LocalizationScreenState(); 
+}
+
+class _LocalizationScreenState extends State<LocalizationScreen> {
+  @override 
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, 
+          appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Язык и Валюта', 'Language & Currency'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
+          body: ListView(
+            padding: const EdgeInsets.all(20), 
+            children: [
+              Text(t("ВАЛЮТА", "CURRENCY"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+              const SizedBox(height: 16), 
+              ...['₸', '\$', '€', '₽', '¥', '£'].map((cur) => GlassCard(
+                onTap: () async { final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_currency', cur); setState(() => appCurrency = cur); }, 
+                margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), customBorder: appCurrency == cur ? appAccentColor : null, 
+                child: Row(children: [Text(cur, style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), const Spacer(), if(appCurrency == cur) Icon(Icons.check_circle, color: appAccentColor)])
+              )), 
+              const SizedBox(height: 30), 
+              Text(t("ЯЗЫК", "LANGUAGE"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+              const SizedBox(height: 16), 
+              ...[{'code':'ru', 'name':'Русский'}, {'code':'en', 'name':'English'}, {'code':'kk', 'name':'Қазақша'}].map((lang) => GlassCard(
+                onTap: () async { final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_language', lang['code']!); setState(() => appLanguage = lang['code']!); }, 
+                margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), customBorder: appLanguage == lang['code'] ? appAccentColor : null, 
+                child: Row(children: [Text(lang['name']!, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), const Spacer(), if(appLanguage == lang['code']) Icon(Icons.check_circle, color: appAccentColor)])
+              ))
+            ]
+          )
+        )
+      ]
+    );
+  }
+}
+
+class DoubleTapSetupScreen extends StatelessWidget { 
+  final String? currentBg; const DoubleTapSetupScreen({super.key, this.currentBg}); 
+  @override Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(color: globalIsLightMode ? Colors.white : (currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
+        if (currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: Image.network(currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, 
+          appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Быстрое добавление', 'Quick Add Setup'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.all(20), 
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, 
+              children: [
+                Icon(Icons.touch_app, color: appAccentColor, size: 64), 
+                const SizedBox(height: 24), 
+                Text(t("Добавляйте траты стуком по крышке iPhone!", "Add expenses by tapping the back of your iPhone!"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                const SizedBox(height: 16), 
+                Text(t("1. Откройте приложение «Команды» (Shortcuts) на iPhone.\n2. Нажмите «+» в правом верхнем углу.\n3. Нажмите «Добавить действие» и найдите «Открыть URL».\n4. Вставьте ссылку ниже:", "1. Open 'Shortcuts' app.\n2. Tap '+'.\n3. Add 'Open URL' action.\n4. Paste this link:"), style: TextStyle(color: sText, fontSize: 16, height: 1.5)), 
+                const SizedBox(height: 16), 
+                Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: appAccentColor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Text("flowiq://add", style: TextStyle(color: appAccentColor, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2), textAlign: TextAlign.center)), 
+                const SizedBox(height: 16), 
+                Text(t("5. Сохраните команду под именем 'FlowIQ'.\n6. Зайдите в Настройки iPhone ➔ Универсальный доступ ➔ Касание ➔ Касание задней панели.\n7. Выберите 'Двойной тап' и привяжите команду 'FlowIQ'.\n\nГотово! Постучите дважды по крышке телефона.", "5. Save as 'FlowIQ'.\n6. Go to iPhone Settings -> Accessibility -> Touch -> Back Tap.\n7. Choose 'Double Tap' and select 'FlowIQ'.\n\nDone! Tap twice to test."), style: TextStyle(color: sText, fontSize: 16, height: 1.5))
+              ]
+            )
+          )
+        )
+      ]
+    );
+  }
+}
+
+class RecurringManagerScreen extends StatefulWidget { 
+  final String? currentBg; const RecurringManagerScreen({super.key, this.currentBg}); 
+  @override State<RecurringManagerScreen> createState() => _RecurringManagerScreenState(); 
+}
+
+class _RecurringManagerScreenState extends State<RecurringManagerScreen> {
+  void _deleteRec(int index) { setState(() { myRecurring.removeAt(index); saveLocalData(); }); }
+  @override Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, 
+          appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Повторяющиеся платежи', 'Recurring Payments'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
+          floatingActionButton: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, onPressed: () { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('В разработке...', 'Coming soon...')), backgroundColor: Colors.orange)); }, child: const Icon(Icons.add)), 
+          body: myRecurring.isEmpty 
+            ? Center(child: Text(t("Нет активных подписок", "No active subscriptions"), style: TextStyle(color: sText))) 
+            : ListView.builder(
+                padding: const EdgeInsets.all(20), itemCount: myRecurring.length, 
+                itemBuilder: (context, index) { 
+                  final rec = myRecurring[index]; 
+                  return GlassCard(
+                    margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), 
+                    child: Row(
+                      children: [
+                        Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.orange.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: const Icon(Icons.autorenew, color: Colors.orange)), 
+                        const SizedBox(width: 16), 
+                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(rec.title, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), Text('${t("Каждое", "Every")} ${rec.dayOfMonth} ${t("число", "day")}', style: TextStyle(color: sText, fontSize: 14))])), 
+                        Text('${formatMoney(rec.amount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)), 
+                        IconButton(icon: const Icon(Icons.delete, color: Colors.redAccent), onPressed: () => _deleteRec(index))
+                      ]
+                    )
+                  ); 
+                }
+              )
+        )
+      ]
+    );
+  }
+}
+
+class AccountsManagerScreen extends StatefulWidget { 
+  final String? currentBg; const AccountsManagerScreen({super.key, this.currentBg}); 
+  @override State<AccountsManagerScreen> createState() => _AccountsManagerScreenState(); 
+}
+
+class _AccountsManagerScreenState extends State<AccountsManagerScreen> {
+  void _showEditBalanceSheet(BankAccount acc) {
+    String tempAmt = "0";
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => StatefulBuilder(
+        builder: (context, setModalState) {
+          Widget buildKey(String val) { 
+            return Expanded(child: InkWell(onTap: () { setModalState(() { if (val == "C") tempAmt = "0"; else if (val == "<") tempAmt = tempAmt.length > 1 ? tempAmt.substring(0, tempAmt.length - 1) : "0"; else if (tempAmt == "0") tempAmt = val; else if (tempAmt.length < 9) tempAmt += val; }); }, borderRadius: BorderRadius.circular(16), child: Container(height: 55, alignment: Alignment.center, child: Text(val, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500, color: pText))))); 
+          }
+          return ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+              child: Container(
+                padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), decoration: BoxDecoration(color: sBg), 
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30), 
+                    Text(t("Изменить баланс", "Edit Balance"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 8), 
+                    Text(acc.name, style: TextStyle(color: sText, fontSize: 16)), 
+                    const SizedBox(height: 24), 
+                    Text(tempAmt.replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ') + " $appCurrency", style: TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: acc.color)), 
+                    const SizedBox(height: 24), 
+                    SafeArea(
+                      top: false, 
+                      child: Container(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.black.withOpacity(0.3), borderRadius: const BorderRadius.vertical(top: Radius.circular(30))), 
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min, 
+                          children: [
+                            Row(children: [buildKey("1"), buildKey("2"), buildKey("3")]), 
+                            Row(children: [buildKey("4"), buildKey("5"), buildKey("6")]), 
+                            Row(children: [buildKey("7"), buildKey("8"), buildKey("9")]), 
+                            Row(children: [buildKey("C"), buildKey("0"), buildKey("<")]), 
+                            const SizedBox(height: 12), 
+                            SizedBox(
+                              width: double.infinity, height: 56, 
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                                onPressed: () { setState(() { acc.balance = int.parse(tempAmt); }); saveLocalData(); Navigator.pop(c); }, 
+                                child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
+                              )
+                            )
+                          ]
+                        )
+                      )
+                    ) 
+                  ]
+                )
+              )
+            )
+          );
+        }
+      )
+    );
+  }
+
+  void _deleteAccount(int index) { 
+    if (myAccounts.length <= 1) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Нельзя удалить последний счет', 'Cannot delete last account')), backgroundColor: Colors.orange)); return; } 
+    setState(() { myAccounts.removeAt(index); saveLocalData(); }); 
+  }
+
+  @override Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, 
+          appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Мои счета', 'My Accounts'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
+          body: ListView.builder(
+            padding: const EdgeInsets.all(20), itemCount: myAccounts.length, 
+            itemBuilder: (context, index) { 
+              final acc = myAccounts[index]; 
+              return Dismissible(
+                key: Key(acc.id), direction: myAccounts.length > 1 ? DismissDirection.endToStart : DismissDirection.none, 
+                confirmDismiss: (direction) async { 
+                  return await showGeneralDialog<bool>(
+                    context: context, pageBuilder: (ctx, a1, a2) => Container(), 
+                    transitionBuilder: (ctx, a1, a2, child) => ScaleTransition(scale: a1, child: AlertDialog(backgroundColor: Colors.transparent, contentPadding: EdgeInsets.zero, content: GlassCard(customBorder: Colors.red.withOpacity(0.5), child: Column(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 56), const SizedBox(height: 16), Text(t('Удалить счет?', 'Delete account?'), style: TextStyle(color: pText, fontSize: 22, fontWeight: FontWeight.bold)), const SizedBox(height: 24), Row(children: [Expanded(child: TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t("Отмена", "Cancel"), style: const TextStyle(color: Colors.grey, fontSize: 16)))), Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), onPressed: () => Navigator.pop(context, true), child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))))])]))))
+                  ); 
+                }, 
+                onDismissed: (_) => _deleteAccount(index), 
+                background: Container(margin: const EdgeInsets.only(bottom: 12), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), decoration: BoxDecoration(color: const Color(0xFFFF3366), borderRadius: BorderRadius.circular(20)), child: const Icon(Icons.delete, color: Colors.white)), 
+                child: GlassCard(
+                  margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), onTap: () => _showEditBalanceSheet(acc), 
+                  child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: acc.color.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(acc.icon, color: acc.color)), const SizedBox(width: 16), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(acc.name, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text('${formatMoney(acc.balance)} $appCurrency', style: TextStyle(color: sText, fontSize: 14))])), Icon(Icons.edit, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.3), size: 20)])
+                )
+              ); 
+            }
+          )
+        )
+      ]
+    );
+  }
+}
+
+class CategoryManagerScreen extends StatefulWidget { 
+  final String? currentBg; const CategoryManagerScreen({super.key, this.currentBg}); 
+  @override State<CategoryManagerScreen> createState() => _CategoryManagerScreenState(); 
+}
+
+class _CategoryManagerScreenState extends State<CategoryManagerScreen> {
+  void _openEditor({CategoryItem? existingCat}) { showModalBottomSheet(context: context, backgroundColor: Colors.transparent, isScrollControlled: true, builder: (context) => CategoryEditorSheet(existingCategory: existingCat)).then((_) => setState(() {})); }
+  void _deleteCategory(int index) { if (appCategories.length <= 1) return; setState(() { appCategories.removeAt(index); saveCategoriesToPrefs(); }); }
+  @override Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, 
+          appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Категории', 'Categories'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
+          floatingActionButton: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, onPressed: () => _openEditor(), child: const Icon(Icons.add)), 
+          body: ListView.builder(
+            padding: const EdgeInsets.all(20), itemCount: appCategories.length, 
+            itemBuilder: (context, index) { 
+              final cat = appCategories[index]; 
+              return Dismissible(
+                key: Key(cat.name + index.toString()), direction: appCategories.length > 1 ? DismissDirection.endToStart : DismissDirection.none, 
+                confirmDismiss: (direction) async { 
+                  return await showGeneralDialog<bool>(
+                    context: context, pageBuilder: (ctx, a1, a2) => Container(), 
+                    transitionBuilder: (ctx, a1, a2, child) => ScaleTransition(scale: a1, child: AlertDialog(backgroundColor: Colors.transparent, contentPadding: EdgeInsets.zero, content: GlassCard(customBorder: Colors.red.withOpacity(0.5), child: Column(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 56), const SizedBox(height: 16), Text(t('Удалить категорию?', 'Delete category?'), style: TextStyle(color: pText, fontSize: 22, fontWeight: FontWeight.bold)), const SizedBox(height: 8), Text(t('Старые траты останутся в истории, но категория исчезнет из калькулятора.', 'Old transactions will remain, but category will be removed.'), textAlign: TextAlign.center, style: TextStyle(color: sText, fontSize: 14)), const SizedBox(height: 24), Row(children: [Expanded(child: TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t("Отмена", "Cancel"), style: const TextStyle(color: Colors.grey, fontSize: 16)))), Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), onPressed: () => Navigator.pop(context, true), child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))))])]))))
+                  ); 
+                }, 
+                onDismissed: (_) => _deleteCategory(index), background: Container(margin: const EdgeInsets.only(bottom: 12), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), decoration: BoxDecoration(color: const Color(0xFFFF3366), borderRadius: BorderRadius.circular(20)), child: const Icon(Icons.delete, color: Colors.white)), 
+                child: GlassCard(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), onTap: () => _openEditor(existingCat: cat), child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: cat.color.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(cat.icon, color: cat.color)), const SizedBox(width: 16), Expanded(child: Text(cat.name, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold))), Icon(Icons.edit, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.3), size: 20)]))
+              ); 
+            }
+          )
+        )
+      ]
+    );
+  }
+}
+
+class CategoryEditorSheet extends StatefulWidget { 
+  final CategoryItem? existingCategory; const CategoryEditorSheet({super.key, this.existingCategory}); 
+  @override State<CategoryEditorSheet> createState() => _CategoryEditorSheetState(); 
+}
+
+class _CategoryEditorSheetState extends State<CategoryEditorSheet> {
+  late TextEditingController _nameCtrl; late Color _selectedColor; late IconData _selectedIcon; late String _selectedScope;
+  @override void initState() { super.initState(); _nameCtrl = TextEditingController(text: widget.existingCategory?.name ?? ''); _selectedColor = widget.existingCategory?.color ?? availableColors[0]; _selectedIcon = widget.existingCategory?.icon ?? availableIcons[0]; _selectedScope = widget.existingCategory?.scope ?? 'both'; }
+  void _save() { if (_nameCtrl.text.trim().isEmpty) return; if (widget.existingCategory != null) { widget.existingCategory!.name = _nameCtrl.text.trim(); widget.existingCategory!.color = _selectedColor; widget.existingCategory!.icon = _selectedIcon; widget.existingCategory!.scope = _selectedScope; } else { appCategories.add(CategoryItem(_nameCtrl.text.trim(), _selectedIcon, _selectedColor, scope: _selectedScope)); } saveCategoriesToPrefs(); Navigator.pop(context); }
+  Widget _scopeBtn(String title, String val) { return Expanded(child: GestureDetector(onTap: () => setState(()=> _selectedScope = val), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: _selectedScope == val ? _selectedColor.withOpacity(0.2) : Colors.transparent, borderRadius: BorderRadius.circular(8), border: Border.all(color: _selectedScope == val ? _selectedColor : gBorder)), child: Center(child: Text(title, style: TextStyle(color: _selectedScope == val ? _selectedColor : sText, fontWeight: FontWeight.bold, fontSize: 12)))))); }
+
+  @override Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+        child: Container(
+          height: MediaQuery.of(context).size.height * 0.85, padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), decoration: BoxDecoration(color: sBg), 
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, 
+            children: [
+              const SizedBox(height: 12), Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2)))), 
+              const SizedBox(height: 20), 
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Row(children: [Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: _selectedColor.withOpacity(0.2), borderRadius: BorderRadius.circular(16)), child: Icon(_selectedIcon, color: _selectedColor, size: 32)), const SizedBox(width: 16), Expanded(child: TextField(controller: _nameCtrl, style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold), decoration: InputDecoration(hintText: t("Название", "Name"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none)))])), 
+              const SizedBox(height: 24), 
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Row(children: [_scopeBtn(t('Только Расход', 'Expense only'), 'expense'), const SizedBox(width: 8), _scopeBtn(t('Только Доход', 'Income only'), 'income'), const SizedBox(width: 8), _scopeBtn(t('Везде', 'Both'), 'both')])), 
+              const SizedBox(height: 30), 
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Text(t("ВЫБЕРИ ЦВЕТ", "CHOOSE COLOR"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5))), 
+              const SizedBox(height: 16), 
+              SizedBox(height: 50, child: ListView.builder(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 20), itemCount: availableColors.length, itemBuilder: (context, index) { final color = availableColors[index]; return GestureDetector(onTap: () => setState(() => _selectedColor = color), child: Container(margin: const EdgeInsets.only(right: 12), width: 50, decoration: BoxDecoration(color: color, shape: BoxShape.circle, border: Border.all(color: _selectedColor == color ? pText : Colors.transparent, width: 3)))); })), 
+              const SizedBox(height: 30), 
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Text(t("ВЫБЕРИ ИКОНКУ", "CHOOSE ICON"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5))), 
+              const SizedBox(height: 16), 
+              Expanded(child: GridView.builder(padding: const EdgeInsets.symmetric(horizontal: 20), gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 5, mainAxisSpacing: 16, crossAxisSpacing: 16), itemCount: availableIcons.length, itemBuilder: (context, index) { final icon = availableIcons[index]; return GestureDetector(onTap: () => setState(() => _selectedIcon = icon), child: Container(decoration: BoxDecoration(color: _selectedIcon == icon ? _selectedColor.withOpacity(0.2) : (globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05)), borderRadius: BorderRadius.circular(16), border: Border.all(color: _selectedIcon == icon ? _selectedColor : Colors.transparent)), child: Icon(icon, color: _selectedIcon == icon ? _selectedColor : sText))); })), 
+              Container(padding: const EdgeInsets.all(20), child: SizedBox(width: double.infinity, height: 60, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: _save, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))))) 
+            ]
+          )
+        )
+      )
+    );
+  }
+}
