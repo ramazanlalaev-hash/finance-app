@@ -1,16 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:ui';
+import 'dart:ui' as ui;
 import 'dart:convert';
+import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-// === ГЛОБАЛЬНЫЕ НАСТРОЙКИ И ЛОКАЛИЗАЦИЯ ===
+// === ГЛОБАЛЬНЫЕ НАСТРОЙКИ, БЕЗОПАСНОСТЬ И ЛОКАЛИЗАЦИЯ ===
+const secureStorage = FlutterSecureStorage();
+String myDeviceId = ''; 
 bool globalIsLightMode = false, globalIsBgBlurred = false, isProUser = false;
-String appCurrency = '₸'; 
+bool useSingleAccount = false; 
+String appCurrency = '\$'; 
 String appLanguage = 'ru';
 
 Color get pText => globalIsLightMode ? Colors.black : Colors.white;
@@ -21,7 +27,51 @@ Color get sBg => globalIsLightMode ? const Color(0xFFF5F5F7).withOpacity(0.95) :
 Color appAccentColor = const Color(0xFF00FFA3);
 Color get accentTextColor => appAccentColor.computeLuminance() < 0.5 ? Colors.white : Colors.black;
 
-String t(String ru, String en) => appLanguage == 'ru' ? ru : en; 
+// ПОЛНЫЙ СЛОВАРЬ
+final Map<String, String> kkTranslations = {
+  'Главная': 'Басты бет', 'Аналитика': 'Аналитика', 'План': 'Жоспар', 'Профиль': 'Профиль',
+  'Расход': 'Шығын', 'Доход': 'Кіріс', 'Актив': 'Актив', 'Счет:': 'Шот:',
+  'Заметка (необязательно)': 'Ескертпе (міндетті емес)', 'Название актива': 'Актив атауы',
+  'Уже владею': 'Менде бар', 'Не списывать деньги со счета': 'Шоттан ақша алмай қосу',
+  'Сохранить актив': 'Активті сақтау', 'Сохранить': 'Сақтау', 'Понятно': 'Түсінікті',
+  'Поступления': 'Түсімдер', 'Списания': 'Шығындар', 'Нет данных': 'Деректер жоқ',
+  'Название': 'Атауы', 'Дата операции': 'Операция күні', 'Покупка': 'Сатып алу',
+  'Продажа': 'Сату', 'Чистая прибыль': 'Таза пайда', 'Убыток': 'Шығын',
+  'Оборот (Cash Flow)': 'Айналым', 'Базовый': 'Негізгі', 'Активы': 'Активтер',
+  'Общий': 'Жалпы', 'Бизнес-отчет (P&L)': 'Бизнес-есеп (P&L)',
+  'Расходы': 'Шығындар', 'Доходы': 'Кірістер', 'Всего заработано': 'Барлығы табылды',
+  'Всего потрачено': 'Барлығы жұмсалды', 'По категориям': 'Санаттар бойынша',
+  'Меньше трат на': 'Азырақ жұмсау:', 'Установить Лимит': 'Лимит орнату', 'Отмена': 'Болдырмау', 
+  'Новая Цель': 'Жаңа Мақсат', 'Создать': 'Құру', 'Пополнить копилку': 'Қоржынды толтыру', 
+  'Своя цель': 'Өз мақсатым', 'Чат с ИИ': 'ИИ-мен чат', 'План и Цели': 'Жоспар және Мақсаттар',
+  'Сегодня безопасно потратить:': 'Бүгін жұмсауға қауіпсіз:', 'Копилка': 'Қоржын', 
+  'Лимиты на месяц': 'Айлық лимиттер', 'Микро-Привычки': 'Микро-Әдеттер',
+  'У вас пока нет активных целей.': 'Әзірге мақсаттар жоқ.',
+  'Купить PRO': 'PRO сатып алу', 'Создайте ПИН-код': 'ПИН-код жасаңыз',
+  'Мой Аккаунт': 'Менің Аккаунтым', 'УПРАВЛЕНИЕ': 'БАСҚАРУ',
+  'Мои счета (Баланс)': 'Менің шоттарым', 'Повторяющиеся платежи': 'Қайталанатын төлемдер',
+  'Категории': 'Санаттар', 'ВНЕШНИЙ ВИД И ЯЗЫК': 'СЫРТҚЫ ТҮРІ ЖӘНЕ ТІЛ',
+  'Язык и Валюта': 'Тіл және Валюта', 'НАСТРОЙКИ': 'БАПТАУЛАР', 
+  'Быстрое добавление (Двойной тап)': 'Жылдам қосу', 'Защита приложения': 'Қолданбаны қорғау', 
+  'Умные уведомления': 'Ақылды хабарландырулар', 'ПОДДЕРЖКА': 'ҚОЛДАУ', 
+  'Оценить FlowIQ': 'FlowIQ-ді бағалау', 'Написать в поддержку': 'Қолдау қызметіне жазу', 
+  'Выйти из аккаунта': 'Аккаунттан шығу', 'Изменить баланс': 'Теңгерімді өзгерту', 
+  'Удалить': 'Өшіру', 'Наличные': 'Қолма-қол ақша',
+  'Долги': 'Қарыздар', 'Я должен': 'Мен қарызбын', 'Мне должны': 'Маған қарыз',
+  'Использовать общий счет': 'Жалпы шотты пайдалану', 'Не спрашивать счет при расходах': 'Шығындарда шотты сұрамау',
+  'Сумма долга': 'Қарыз сомасы', 'Имя (Кто или Кому)': 'Аты (Кім/Кімге)',
+  'Оплачено': 'Төленді', 'Осталось': 'Қалды', 'Погасить долг': 'Қарызды өтеу',
+  'Добавить долг': 'Қарыз қосу', 'Дата возврата': 'Қайтару күні',
+  'История платежей': 'Төлемдер тарихы', 'Платежей пока нет': 'Әзірге төлемдер жоқ', 'Внести платеж': 'Төлем жасау', 'Дата': 'Күні'
+};
+
+String t(String ru, String en) {
+  if (appLanguage == 'ru') return ru;
+  if (appLanguage == 'en') return en;
+  if (appLanguage == 'kk') return kkTranslations[ru] ?? en; 
+  return en;
+}
+
 String formatCustomDate(DateTime d) => '${d.day} ${['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][d.month - 1]} ${d.year}';
 String formatMoney(int amount) => amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ');
 
@@ -52,6 +102,14 @@ class RecurringTx {
   factory RecurringTx.fromJson(Map<String, dynamic> j) => RecurringTx(id: j['id'], title: j['title'], amount: j['amount'], type: j['type'], category: j['category'], accountId: j['accountId'], dayOfMonth: j['dayOfMonth']); 
 }
 
+class Debt { 
+  String id; String title; int totalAmount; int paidAmount; String type; DateTime dueDate; 
+  List<Map<String, dynamic>> history; 
+  Debt({required this.id, required this.title, required this.totalAmount, required this.paidAmount, required this.type, required this.dueDate, this.history = const []}); 
+  Map<String, dynamic> toJson() => {'id': id, 'title': title, 'totalAmount': totalAmount, 'paidAmount': paidAmount, 'type': type, 'dueDate': dueDate.toIso8601String(), 'history': history}; 
+  factory Debt.fromJson(Map<String, dynamic> j) => Debt(id: j['id'], title: j['title'], totalAmount: j['totalAmount'], paidAmount: j['paidAmount'], type: j['type'], dueDate: DateTime.parse(j['dueDate']), history: j['history'] != null ? List<Map<String, dynamic>>.from(j['history']) : []); 
+}
+
 class Transaction { 
   final dynamic id; final String title, note, type, category; final int amount; final IconData icon; final Color iconColor; final DateTime date; 
   Transaction({required this.id, required this.title, required this.note, required this.amount, required this.type, required this.category, required this.icon, required this.iconColor, required this.date}); 
@@ -59,10 +117,11 @@ class Transaction {
   factory Transaction.fromJson(Map<String, dynamic> json) => Transaction(id: json['id'], title: json['title'], note: json['note'], type: json['type'], category: json['category'], amount: json['amount'], icon: IconData(json['icon'], fontFamily: 'MaterialIcons'), iconColor: Color(json['iconColor']), date: DateTime.parse(json['date'])); 
 }
 
-// === БАЗОВЫЕ ДАННЫЕ И СПИСКИ ===
+// === БАЗОВЫЕ ДАННЫЕ ===
 List<BankAccount> myAccounts = [];
 List<BigGoal> myGoals = [];
 List<RecurringTx> myRecurring = [];
+List<Debt> myDebts = [];
 
 final List<CategoryItem> defaultCategories = [
   CategoryItem('Супермаркеты', Icons.shopping_cart_outlined, Colors.blue, scope: 'expense'), 
@@ -97,30 +156,12 @@ final Map<String, Color> wallpaperAccents = {
   premiumWallpapers[15]: const Color(0xFF00E5FF), premiumWallpapers[16]: const Color(0xFFE040FB), premiumWallpapers[17]: const Color(0xFF00FFA3) 
 };
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Supabase.initialize(url: 'https://ssrlwjjyqfzsancuzbso.supabase.co', anonKey: 'sb_publishable_1g8xHUefLbtZzR_rAGe1sA_FO7LVpPZ');
-  runApp(const FlowIQApp());
-}
-
-class FlowIQApp extends StatelessWidget { 
-  const FlowIQApp({super.key}); 
-  @override 
-  Widget build(BuildContext context) { 
-    return MaterialApp(
-      debugShowCheckedModeBanner: false, 
-      title: 'FlowIQ', 
-      theme: ThemeData(brightness: Brightness.dark, scaffoldBackgroundColor: Colors.transparent, fontFamily: 'SF Pro Display'), 
-      home: const RootScreen()
-    ); 
-  } 
-}
-
-// --- КЭШИРОВАНИЕ И СОХРАНЕНИЕ ---
+// === ЛОКАЛЬНОЕ ХРАНИЛИЩЕ ===
 Future<void> saveCategoriesToPrefs() async { 
   final prefs = await SharedPreferences.getInstance(); 
   await prefs.setStringList('saved_categories', appCategories.map((c) => '${c.name}|${c.icon.codePoint}|${c.color.value}|${c.scope}').toList()); 
 }
+
 Future<void> loadCategoriesFromPrefs() async { 
   final prefs = await SharedPreferences.getInstance(); 
   List<String>? encoded = prefs.getStringList('saved_categories'); 
@@ -131,28 +172,66 @@ Future<void> loadCategoriesFromPrefs() async {
     }).toList(); 
   }
 }
+
 Future<void> saveLocalData() async { 
   final prefs = await SharedPreferences.getInstance(); 
   await prefs.setString('my_accounts', jsonEncode(myAccounts.map((a) => a.toJson()).toList())); 
   await prefs.setString('my_goals', jsonEncode(myGoals.map((g) => g.toJson()).toList())); 
   await prefs.setString('my_recurring', jsonEncode(myRecurring.map((r) => r.toJson()).toList())); 
+  await prefs.setString('my_debts', jsonEncode(myDebts.map((d) => d.toJson()).toList())); 
+  await prefs.setBool('use_single_account', useSingleAccount);
 }
+
 Future<void> loadLocalData() async { 
+  myDeviceId = await secureStorage.read(key: 'device_id') ?? '';
+  if (myDeviceId.isEmpty) {
+    myDeviceId = 'user_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(100000)}';
+    await secureStorage.write(key: 'device_id', value: myDeviceId);
+  }
+
   final prefs = await SharedPreferences.getInstance(); 
-  appCurrency = prefs.getString('app_currency') ?? '₸';
-  appLanguage = prefs.getString('app_language') ?? 'ru';
+  
+  String? savedLang = prefs.getString('app_language');
+  if (savedLang == null || savedLang.isEmpty) {
+    String deviceLang = ui.PlatformDispatcher.instance.locale.languageCode;
+    appLanguage = ['ru', 'en', 'kk'].contains(deviceLang) ? deviceLang : 'en';
+    await prefs.setString('app_language', appLanguage);
+  } else {
+    appLanguage = savedLang;
+  }
+
+  String? savedCur = prefs.getString('app_currency');
+  if (savedCur == null || savedCur.isEmpty) {
+    String? country = ui.PlatformDispatcher.instance.locale.countryCode;
+    Map<String, String> defaultCurrencies = {
+      'KZ': '₸', 'RU': '₽', 'BY': 'Br', 'UA': '₴', 'AZ': '₼', 'AM': '֏',
+      'UZ': 'soʻm', 'KG': 'с', 'TJ': 'SM', 'GE': 'ლ',
+      'US': '\$', 'GB': '£', 'FR': '€', 'DE': '€', 'ES': '€', 'IT': '€', 
+      'CN': '¥', 'JP': '¥', 'CH': '₣', 'AE': 'د.إ'
+    };
+    appCurrency = defaultCurrencies[country] ?? '\$';
+    await prefs.setString('app_currency', appCurrency);
+  } else {
+    appCurrency = savedCur;
+  }
+  
+  useSingleAccount = prefs.getBool('use_single_account') ?? false;
   
   final accStr = prefs.getString('my_accounts'); 
-  if (accStr != null) myAccounts = List<BankAccount>.from(jsonDecode(accStr).map((x) => BankAccount.fromJson(x))); 
+  if (accStr != null) { try { myAccounts = List<BankAccount>.from(jsonDecode(accStr).map((x) => BankAccount.fromJson(x))); } catch(e) { myAccounts = []; } }
   if (myAccounts.isEmpty) myAccounts = [BankAccount(id: '1', name: t('Наличные', 'Cash'), balance: 0, color: Colors.green, icon: Icons.payments)];
   
   final goalStr = prefs.getString('my_goals'); 
-  if (goalStr != null) myGoals = List<BigGoal>.from(jsonDecode(goalStr).map((x) => BigGoal.fromJson(x))); 
+  if (goalStr != null) { try { myGoals = List<BigGoal>.from(jsonDecode(goalStr).map((x) => BigGoal.fromJson(x))); } catch(e){} }
   
   final recStr = prefs.getString('my_recurring'); 
-  if (recStr != null) myRecurring = List<RecurringTx>.from(jsonDecode(recStr).map((x) => RecurringTx.fromJson(x))); 
+  if (recStr != null) { try { myRecurring = List<RecurringTx>.from(jsonDecode(recStr).map((x) => RecurringTx.fromJson(x))); } catch(e){} }
+  
+  final debtStr = prefs.getString('my_debts'); 
+  if (debtStr != null) { try { myDebts = List<Debt>.from(jsonDecode(debtStr).map((x) => Debt.fromJson(x))); } catch(e){} }
 }
 
+// === БАЗОВЫЕ UI КОМПОНЕНТЫ ===
 class GlassCard extends StatelessWidget {
   final Widget child; final EdgeInsetsGeometry? padding, margin; final Color? customBorder; final VoidCallback? onTap;
   const GlassCard({super.key, required this.child, this.padding, this.margin, this.customBorder, this.onTap});
@@ -220,7 +299,27 @@ class DateRangePickerButton extends StatelessWidget {
     );
   }
 }
+// === ТОЧКА ВХОДА ===
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: 'https://ssrlwjjyqfzsancuzbso.supabase.co', anonKey: 'sb_publishable_1g8xHUefLbtZzR_rAGe1sA_FO7LVpPZ');
+  runApp(const FlowIQApp());
+}
 
+class FlowIQApp extends StatelessWidget { 
+  const FlowIQApp({super.key}); 
+  @override 
+  Widget build(BuildContext context) { 
+    return MaterialApp(
+      debugShowCheckedModeBanner: false, 
+      title: 'FlowIQ', 
+      theme: ThemeData(brightness: Brightness.dark, scaffoldBackgroundColor: Colors.transparent, fontFamily: 'SF Pro Display'), 
+      home: const RootScreen()
+    ); 
+  } 
+}
+
+// === КОРНЕВОЙ ЭКРАН И НАВИГАЦИЯ ===
 class RootScreen extends StatefulWidget { 
   const RootScreen({super.key}); 
   @override State<RootScreen> createState() => _RootScreenState(); 
@@ -244,7 +343,9 @@ class _RootScreenState extends State<RootScreen> {
   Future<void> _initApp() async {
     final prefs = await SharedPreferences.getInstance(); 
     isProUser = prefs.getBool('is_pro_user') ?? false; 
-    savedPin = prefs.getString('app_pin'); 
+    
+    // БЕЗОПАСНОСТЬ APPLE: Читаем пин-код из Keychain
+    savedPin = await secureStorage.read(key: 'app_pin'); 
     useBiometrics = prefs.getBool('use_biometrics') ?? false;
     
     if (savedPin != null && isProUser) { 
@@ -306,7 +407,7 @@ class _RootScreenState extends State<RootScreen> {
     } 
     await prefs.setString('last_login_date', today.toIso8601String()); 
     await prefs.setInt('streak_count', streakCount); 
-    userLevel = streakCount < 3 ? t("🐣 Новичок", "🐣 Beginner") : (streakCount < 7 ? t("🛡️ Контролёр", "🛡️ Controller") : t("👑 Инвестор", "👑 Investor")); 
+    userLevel = streakCount < 3 ? "🐣 ${t("Новичок", "Beginner")}" : (streakCount < 7 ? "🛡️ ${t("Контролёр", "Controller")}" : "👑 ${t("Инвестор", "Investor")}"); 
     if (mounted) setState(() {});
   }
 
@@ -329,7 +430,7 @@ class _RootScreenState extends State<RootScreen> {
 
   Future<void> _fetchTransactions() async {
     try {
-      final data = await Supabase.instance.client.from('transactions').select().order('created_at', ascending: false);
+      final data = await Supabase.instance.client.from('transactions').select().eq('user_id', myDeviceId).order('created_at', ascending: false);
       List<Transaction> fetchedTx = []; 
       for (var row in data) {
         final type = row['type'] as String? ?? 'expense'; 
@@ -439,6 +540,7 @@ class _RootScreenState extends State<RootScreen> {
     );
   }
 }
+// === ГЛАВНЫЙ ЭКРАН (ДАШБОРД) ===
 class DashboardScreen extends StatelessWidget {
   final List<Transaction> allTransactions; 
   final List<Transaction> filteredTransactions; 
@@ -452,14 +554,11 @@ class DashboardScreen extends StatelessWidget {
   
   const DashboardScreen({super.key, required this.allTransactions, required this.filteredTransactions, required this.balance, required this.isLoading, required this.onRefresh, required this.streak, required this.level, required this.selectedDateRange, required this.onDateRangeChanged});
 
-  void _safeExecute(BuildContext context, Future<void> Function() action) async { 
-    try { 
-      await action(); 
-      await saveLocalData(); 
-      onRefresh(); 
-    } catch (e) { 
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('⚠️ Ошибка сети.'), backgroundColor: Colors.redAccent)); 
-    } 
+  void _fastExecute(BuildContext context, VoidCallback localAction, Future<void> Function() networkAction) { 
+    localAction(); 
+    saveLocalData(); 
+    onRefresh(); 
+    networkAction().catchError((e) { print('Network error (saved offline): $e'); }); 
   }
 
   Future<void> _showAddTransactionSheet(BuildContext context) async {
@@ -474,13 +573,23 @@ class DashboardScreen extends StatelessWidget {
     );
     
     if (result != null && result['amount'] > 0) {
-      _safeExecute(context, () async {
-        var acc = myAccounts.firstWhere((a) => a.id == result['accountId']);
-        if (result['type'] == 'expense' || result['type'] == 'asset') acc.balance -= result['amount'] as int;
-        else if (result['type'] == 'income') acc.balance += result['amount'] as int;
-        
-        await Supabase.instance.client.from('transactions').insert({'title': result['title'], 'note': result['note'], 'amount': result['amount'], 'type': result['type'], 'category': result['category']});
-      });
+      _fastExecute(context, 
+        () {
+          var acc = myAccounts.firstWhere((a) => a.id == result['accountId']);
+          if (result['type'] == 'expense' || result['type'] == 'asset') acc.balance -= result['amount'] as int;
+          else if (result['type'] == 'income') acc.balance += result['amount'] as int;
+        }, 
+        () async {
+          await Supabase.instance.client.from('transactions').insert({
+            'user_id': myDeviceId, 
+            'title': result['title'], 
+            'note': result['note'], 
+            'amount': result['amount'], 
+            'type': result['type'], 
+            'category': result['category']
+          });
+        }
+      );
     }
   }
 
@@ -496,15 +605,26 @@ class DashboardScreen extends StatelessWidget {
     );
     
     if (result != null && result['amount'] > 0) {
-      _safeExecute(context, () async {
-        var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
-        var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
-        
-        fromAcc.balance -= result['amount'] as int; 
-        toAcc.balance += result['amount'] as int;
-        
-        await Supabase.instance.client.from('transactions').insert({'title': '${t("Перевод", "Transfer")}: ${fromAcc.name} ➔ ${toAcc.name}', 'note': '', 'amount': result['amount'], 'type': 'transfer', 'category': 'Разное'});
-      });
+      _fastExecute(context, 
+        () {
+          var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
+          var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
+          fromAcc.balance -= result['amount'] as int; 
+          toAcc.balance += result['amount'] as int;
+        }, 
+        () async {
+          var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
+          var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
+          await Supabase.instance.client.from('transactions').insert({
+            'user_id': myDeviceId, 
+            'title': '${t("Перевод", "Transfer")}: ${fromAcc.name} ➔ ${toAcc.name}', 
+            'note': '', 
+            'amount': result['amount'], 
+            'type': 'transfer', 
+            'category': 'Разное'
+          });
+        }
+      );
     }
   }
 
@@ -625,12 +745,14 @@ class DashboardScreen extends StatelessWidget {
                     width: double.infinity, height: 56, 
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: Colors.black, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
-                      onPressed: () async { 
+                      onPressed: () { 
                         int sell = int.tryParse(ctrl.text) ?? 0; 
                         if (sell > 0) { 
-                          await Supabase.instance.client.from('transactions').update({'type': 'sold_asset'}).eq('id', asset.id); 
-                          await Supabase.instance.client.from('transactions').insert({'title': 'Продажа: ${asset.title}', 'amount': sell, 'type': 'asset_sale', 'category': 'Инвестиции'}); 
-                          Navigator.pop(c); onRefresh(); 
+                          _fastExecute(context, () { }, () async {
+                            await Supabase.instance.client.from('transactions').update({'type': 'sold_asset'}).eq('id', asset.id); 
+                            await Supabase.instance.client.from('transactions').insert({'user_id': myDeviceId, 'title': 'Продажа: ${asset.title}', 'amount': sell, 'type': 'asset_sale', 'category': 'Инвестиции'}); 
+                          });
+                          Navigator.pop(c); 
                         } 
                       }, 
                       child: Text(t("Подтвердить продажу", "Confirm Sale"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
@@ -672,7 +794,7 @@ class DashboardScreen extends StatelessWidget {
                     const SizedBox(height: 24),
                     Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.03) : Colors.white.withOpacity(0.03), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t("Дата операции", "Date"), style: TextStyle(color: sText, fontSize: 12)), const SizedBox(height: 4), Text(formatCustomDate(tx.date), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))])), 
                     const SizedBox(height: 16),
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: noteCtrl, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Заметка", "Note"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: noteCtrl, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Заметка (необязательно)", "Note (Optional)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                     const SizedBox(height: 24),
                     Row(
                       children: [
@@ -832,132 +954,7 @@ class DashboardScreen extends StatelessWidget {
   }
 }
 
-class TransferSheet extends StatefulWidget { 
-  const TransferSheet({super.key}); 
-  @override State<TransferSheet> createState() => _TransferSheetState(); 
-}
-
-class _TransferSheetState extends State<TransferSheet> {
-  String amount = "0"; String? fromAccId, toAccId;
-  
-  @override 
-  void initState() { 
-    super.initState(); 
-    if(myAccounts.isNotEmpty) { 
-      fromAccId = myAccounts[0].id; 
-      if(myAccounts.length > 1) toAccId = myAccounts[1].id; else toAccId = myAccounts[0].id; 
-    } 
-  }
-  
-  void _onKeyPress(String value) { 
-    setState(() { 
-      if (value == "C") amount = "0"; 
-      else if (value == "<") amount = amount.length > 1 ? amount.substring(0, amount.length - 1) : "0"; 
-      else if (amount == "0") amount = value; 
-      else if (amount.length < 8) amount += value; 
-    }); 
-  }
-  
-  Widget _buildKey(String val) { 
-    return Expanded(
-      child: InkWell(
-        onTap: () => _onKeyPress(val), borderRadius: BorderRadius.circular(16), 
-        child: Container(height: 55, alignment: Alignment.center, child: Text(val, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500, color: pText)))
-      )
-    ); 
-  }
-  
-  @override 
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), 
-      child: ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
-          child: Container(
-            decoration: BoxDecoration(color: sBg), 
-            child: Column(
-              mainAxisSize: MainAxisSize.min, 
-              children: [
-                const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
-                const SizedBox(height: 20), 
-                Text(t("Перевод между счетами", "Transfer between accounts"), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
-                const SizedBox(height: 20), 
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20), 
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start, 
-                          children: [
-                            Text(t("Откуда", "From"), style: TextStyle(color: sText, fontSize: 12)), 
-                            const SizedBox(height: 4), 
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
-                              child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: fromAccId, isExpanded: true, dropdownColor: sBg, items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 14)))).toList(), onChanged: (val) => setState(() => fromAccId = val)))
-                            )
-                          ]
-                        )
-                      ), 
-                      const SizedBox(width: 16), 
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start, 
-                          children: [
-                            Text(t("Куда", "To"), style: TextStyle(color: sText, fontSize: 12)), 
-                            const SizedBox(height: 4), 
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
-                              child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: toAccId, isExpanded: true, dropdownColor: sBg, items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 14)))).toList(), onChanged: (val) => setState(() => toAccId = val)))
-                            )
-                          ]
-                        )
-                      )
-                    ]
-                  )
-                ), 
-                const SizedBox(height: 30), 
-                Text(amount.replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ') + " $appCurrency", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.purpleAccent)), 
-                const SizedBox(height: 20), 
-                SafeArea(
-                  top: false, 
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.black.withOpacity(0.3), borderRadius: const BorderRadius.vertical(top: Radius.circular(30))), 
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min, 
-                      children: [
-                        Row(children: [_buildKey("1"), _buildKey("2"), _buildKey("3")]), 
-                        Row(children: [_buildKey("4"), _buildKey("5"), _buildKey("6")]), 
-                        Row(children: [_buildKey("7"), _buildKey("8"), _buildKey("9")]), 
-                        Row(children: [_buildKey("C"), _buildKey("0"), _buildKey("<")]), 
-                        const SizedBox(height: 12), 
-                        SizedBox(
-                          width: double.infinity, height: 56, 
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
-                            onPressed: () { 
-                              if (fromAccId != toAccId && int.parse(amount) > 0) { 
-                                Navigator.pop(context, {'amount': int.parse(amount), 'fromAcc': fromAccId, 'toAcc': toAccId}); 
-                              } 
-                            }, 
-                            child: Text(t("Перевести", "Transfer"), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
-                          )
-                        )
-                      ]
-                    )
-                  )
-                )
-              ]
-            )
-          )
-        )
-      )
-    );
-  }
-}
-
+// === ОКНО ДОБАВЛЕНИЯ ТРАНЗАКЦИИ ===
 class AddTransactionSheet extends StatefulWidget { 
   const AddTransactionSheet({super.key}); 
   @override State<AddTransactionSheet> createState() => _AddTransactionSheetState(); 
@@ -969,17 +966,8 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
   String title = "", note = ""; 
   bool isAlreadyOwned = false, isSaving = false;
   
-  @override 
-  void initState() { 
-    super.initState(); 
-    _setDefaultCategory(); 
-    if(myAccounts.isNotEmpty) selectedAccId = myAccounts[0].id; 
-  }
-  
-  void _setDefaultCategory() { 
-    final filtered = appCategories.where((c) => c.scope == 'both' || c.scope == selectedType).toList(); 
-    if(filtered.isNotEmpty) selectedCategory = filtered.first.name; 
-  }
+  @override void initState() { super.initState(); _setDefaultCategory(); if(myAccounts.isNotEmpty) selectedAccId = myAccounts[0].id; }
+  void _setDefaultCategory() { final filtered = appCategories.where((c) => c.scope == 'both' || c.scope == selectedType).toList(); if(filtered.isNotEmpty) selectedCategory = filtered.first.name; }
   
   void _onKeyPress(String value) { 
     setState(() { 
@@ -999,16 +987,14 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
     ); 
   }
   
-  @override 
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     Color getBtnColor() { if (selectedType == 'income') return Colors.blue; if (selectedType == 'asset') return Colors.amber; return appAccentColor; }
     Color getBtnTextCol() { if (selectedType == 'income' || selectedType == 'asset') return Colors.white; return accentTextColor; }
     final filteredCategories = appCategories.where((c) => c.scope == 'both' || c.scope == selectedType).toList();
     if (selectedCategory == null || !filteredCategories.any((c) => c.name == selectedCategory)) { if(filteredCategories.isNotEmpty) selectedCategory = filteredCategories.first.name; }
     
-    // ИСПРАВЛЕНИЕ КЛАВИАТУРЫ: прячем калькулятор, когда открыта системная клава букв
     bool isSystemKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
-
+    
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: ClipRRect(
@@ -1020,8 +1006,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
             child: Column(
               mainAxisSize: MainAxisSize.min, 
               children: [
-                const SizedBox(height: 12), 
-                Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
                 const SizedBox(height: 20),
                 
                 Flexible(
@@ -1042,20 +1027,21 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                         ), 
                         const SizedBox(height: 20),
                         
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 20), 
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), 
-                            child: Row(
-                              children: [
-                                Text(t("Счет:", "Account:"), style: TextStyle(color: sText, fontSize: 14)), 
-                                const SizedBox(width: 12), 
-                                Expanded(child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: selectedAccId, isExpanded: true, dropdownColor: sBg, items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)))).toList(), onChanged: (val) => setState(() => selectedAccId = val))))
-                              ]
+                        if (!useSingleAccount)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 20), 
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20)), 
+                              child: Row(
+                                children: [
+                                  Text(t("Счет:", "Account:"), style: TextStyle(color: sText, fontSize: 14)), 
+                                  const SizedBox(width: 12), 
+                                  Expanded(child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: selectedAccId, isExpanded: true, dropdownColor: sBg, borderRadius: BorderRadius.circular(20), items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)))).toList(), onChanged: (val) => setState(() => selectedAccId = val))))
+                                ]
+                              )
                             )
-                          )
-                        ), 
-                        const SizedBox(height: 20),
+                          ), 
+                        if (!useSingleAccount) const SizedBox(height: 20),
                         
                         if (selectedType != 'asset') ...[
                           SizedBox(
@@ -1067,19 +1053,19 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                           ), 
                           const SizedBox(height: 20), 
                           Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), 
+                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
                             child: TextField(style: TextStyle(color: pText, fontSize: 16), decoration: InputDecoration(hintText: t("Заметка (необязательно)", "Note (Optional)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none, icon: Icon(Icons.edit_note, color: sText)), onChanged: (val) => note = val)
                           )
                         ],
                         
                         if (selectedType == 'asset') ...[
                           Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), 
+                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
                             child: TextField(style: TextStyle(color: pText, fontSize: 16), decoration: InputDecoration(hintText: t("Название актива", "Asset name"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none, icon: Icon(Icons.diamond_outlined, color: sText)), onChanged: (val) => title = val, autofocus: false)
                           ), 
                           const SizedBox(height: 12), 
                           Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: gBorder)), 
+                            margin: const EdgeInsets.symmetric(horizontal: 20), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
                             child: TextField(style: TextStyle(color: pText, fontSize: 16), decoration: InputDecoration(hintText: t("Заметка (необязательно)", "Note (Optional)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none, icon: Icon(Icons.edit_note, color: sText)), onChanged: (val) => note = val)
                           ), 
                           const SizedBox(height: 16), 
@@ -1139,6 +1125,119 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
     );
   }
 }
+
+// === ОКНО ПЕРЕВОДА ===
+class TransferSheet extends StatefulWidget { 
+  const TransferSheet({super.key}); 
+  @override State<TransferSheet> createState() => _TransferSheetState(); 
+}
+
+class _TransferSheetState extends State<TransferSheet> {
+  String amount = "0"; String? fromAccId, toAccId;
+  
+  @override void initState() { super.initState(); if(myAccounts.isNotEmpty) { fromAccId = myAccounts[0].id; if(myAccounts.length > 1) toAccId = myAccounts[1].id; else toAccId = myAccounts[0].id; } }
+  void _onKeyPress(String value) { setState(() { if (value == "C") amount = "0"; else if (value == "<") amount = amount.length > 1 ? amount.substring(0, amount.length - 1) : "0"; else if (amount == "0") amount = value; else if (amount.length < 8) amount += value; }); }
+  Widget _buildKey(String val) { return Expanded(child: InkWell(onTap: () => _onKeyPress(val), borderRadius: BorderRadius.circular(16), child: Container(height: 55, alignment: Alignment.center, child: Text(val, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500, color: pText))))); }
+  
+  @override Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), 
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+          child: Container(
+            decoration: BoxDecoration(color: sBg), 
+            child: Column(
+              mainAxisSize: MainAxisSize.min, 
+              children: [
+                const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                const SizedBox(height: 20), Text(t("Перевод между счетами", "Transfer between accounts"), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
+                const SizedBox(height: 20), 
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20), 
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start, 
+                            children: [
+                              Text(t("Откуда", "From"), style: TextStyle(color: sText, fontSize: 12)), 
+                              const SizedBox(height: 4), 
+                              DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: fromAccId, isExpanded: true, dropdownColor: sBg, borderRadius: BorderRadius.circular(20), 
+                                  items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))).toList(), 
+                                  onChanged: (val) => setState(() => fromAccId = val)
+                                )
+                              )
+                            ]
+                          )
+                        )
+                      ), 
+                      const SizedBox(width: 12),
+                      Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.purpleAccent.withOpacity(0.2), shape: BoxShape.circle), child: const Icon(Icons.arrow_forward, color: Colors.purpleAccent, size: 20)),
+                      const SizedBox(width: 12), 
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20), border: Border.all(color: gBorder)), 
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start, 
+                            children: [
+                              Text(t("Куда", "To"), style: TextStyle(color: sText, fontSize: 12)), 
+                              const SizedBox(height: 4), 
+                              DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: toAccId, isExpanded: true, dropdownColor: sBg, borderRadius: BorderRadius.circular(20), 
+                                  items: myAccounts.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))).toList(), 
+                                  onChanged: (val) => setState(() => toAccId = val)
+                                )
+                              )
+                            ]
+                          )
+                        )
+                      )
+                    ]
+                  )
+                ), 
+                const SizedBox(height: 30), 
+                Text(amount.replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ') + " $appCurrency", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.purpleAccent)), 
+                const SizedBox(height: 20), 
+                SafeArea(
+                  top: false, 
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.black.withOpacity(0.3), borderRadius: const BorderRadius.vertical(top: Radius.circular(30))), 
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min, 
+                      children: [
+                        Row(children: [_buildKey("1"), _buildKey("2"), _buildKey("3")]), 
+                        Row(children: [_buildKey("4"), _buildKey("5"), _buildKey("6")]), 
+                        Row(children: [_buildKey("7"), _buildKey("8"), _buildKey("9")]), 
+                        Row(children: [_buildKey("C"), _buildKey("0"), _buildKey("<")]), 
+                        const SizedBox(height: 12), 
+                        SizedBox(
+                          width: double.infinity, height: 56, 
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                            onPressed: () { if (fromAccId != toAccId && int.parse(amount) > 0) Navigator.pop(context, {'amount': int.parse(amount), 'fromAcc': fromAccId, 'toAcc': toAccId}); }, 
+                            child: Text(t("Перевести", "Transfer"), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
+                          )
+                        )
+                      ]
+                    )
+                  )
+                )
+              ]
+            )
+          )
+        )
+      )
+    );
+  }
+}
+// === ЭКРАН АНАЛИТИКИ ===
 class AnalyticsScreen extends StatefulWidget {
   final List<Transaction> allTransactions; 
   final List<Transaction> transactions; 
@@ -1155,8 +1254,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   int touchedIndex = -1, turnoverMode = 0; 
   bool showIncomeAnalysis = false;
   
-  String formatMoney(int amount) => amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ');
-
   void _showInfoPopup(BuildContext context, String title, String text) {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
@@ -1261,7 +1358,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     String baseName = tx.title.replaceFirst('Продажа: ', '').replaceFirst('Убыток: ', '').replaceFirst('Прибыль: ', '');
     var buyTx = widget.allTransactions.where((t) => (t.type == 'sold_asset' || t.type == 'asset' || t.type == 'asset_owned') && t.title == baseName).firstOrNull;
     var sellTx = widget.allTransactions.where((t) => t.type == 'asset_sale' && t.title == 'Продажа: $baseName').firstOrNull;
-    
+
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (context) => ClipRRect(
@@ -1327,7 +1424,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       )
     );
   }
-  
+
   @override 
   Widget build(BuildContext context) {
     List<Transaction> analyticsExpenses = widget.transactions.where((t) => t.type == 'expense').toList(); 
@@ -1470,7 +1567,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                           const SizedBox(height: 4), 
                           Text('${formatMoney(currentTotal)} $appCurrency', style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))
                         ] else ...[
-                          Text(currentSorted[touchedIndex].key, style: TextStyle(color: sText, fontSize: 14)), 
+                          Text(t(currentSorted[touchedIndex].key, currentSorted[touchedIndex].key), style: TextStyle(color: sText, fontSize: 14)), 
                           const SizedBox(height: 4), 
                           Text('${formatMoney(currentSorted[touchedIndex].value)} $appCurrency', style: TextStyle(color: appCategories.firstWhere((c) => c.name == currentSorted[touchedIndex].key, orElse: () => CategoryItem('', Icons.block, pText)).color, fontSize: 22, fontWeight: FontWeight.bold)), 
                           const SizedBox(height: 2), 
@@ -1481,7 +1578,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   )
                 ]
               )
-            ), 
+            ),
             const SizedBox(height: 40), 
             
             Text(selectedCatName == null ? t('По категориям', 'By Categories') : '${t("Операции", "Tx")}: $selectedCatName', style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
@@ -1498,7 +1595,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween, 
                         children: [
-                          Row(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: barColor.withOpacity(0.2), borderRadius: BorderRadius.circular(10)), child: Icon(catObj.icon, color: barColor, size: 20)), const SizedBox(width: 12), Text(catObj.name, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500))]), 
+                          Row(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: barColor.withOpacity(0.2), borderRadius: BorderRadius.circular(10)), child: Icon(catObj.icon, color: barColor, size: 20)), const SizedBox(width: 12), Text(t(catObj.name, catObj.name), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500))]), 
                           Text('${formatMoney(catAmount)} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold))
                         ]
                       ), 
@@ -1515,7 +1612,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   children: [
                     Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: tx.iconColor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(tx.icon, color: tx.iconColor, size: 24)), 
                     const SizedBox(width: 16), 
-                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(tx.title.isNotEmpty && (tx.type == 'asset' || tx.type == 'margin_loss' || tx.type == 'margin_profit' || tx.type == 'sold_asset') ? tx.title : tx.category, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis)])), 
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(tx.title.isNotEmpty && (tx.type == 'asset' || tx.type == 'margin_loss' || tx.type == 'margin_profit' || tx.type == 'sold_asset') ? tx.title : t(tx.category, tx.category), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis)])), 
                     Text('${showIncomeAnalysis ? "+" : "-"} ${formatMoney(tx.amount)} $appCurrency', style: TextStyle(color: showIncomeAnalysis ? Colors.green : pText, fontSize: 16, fontWeight: FontWeight.bold))
                   ]
                 )
@@ -1527,6 +1624,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 }
 
+// === ЭКРАН ПЛАНИРОВАНИЯ ===
 class SavingHabit { 
   String title; int savePerDay; int timesResisted; 
   SavingHabit(this.title, this.savePerDay, {this.timesResisted = 0}); 
@@ -1546,26 +1644,13 @@ class PlanScreen extends StatefulWidget {
 
 class _PlanScreenState extends State<PlanScreen> {
   List<SavingHabit> activeHabits = []; 
-  List<SavingHabit> suggestions = []; 
   Map<String, int> limits = {};
   
-  @override void initState() { super.initState(); _loadLimits(); _generateAIRecommendations(); }
+  @override void initState() { super.initState(); _loadLimits(); }
   
   Future<void> _loadLimits() async { 
     final prefs = await SharedPreferences.getInstance(); 
     setState(() { limits = {}; for (var cat in appCategories) { int? l = prefs.getInt('limit_${cat.name}'); if (l != null) limits[cat.name] = l; } }); 
-  }
-  
-  void _generateAIRecommendations() { 
-    Map<String, int> expTotals = {}; 
-    for (var tx in widget.allTransactions.where((t) => t.type == 'expense')) { expTotals[tx.category] = (expTotals[tx.category] ?? 0) + tx.amount; } 
-    if (expTotals.isNotEmpty) { 
-      var topCat = expTotals.entries.reduce((a, b) => a.value > b.value ? a : b).key; 
-      int suggestionAmount = (expTotals[topCat]! * 0.1 / 30).round(); if(suggestionAmount < 100) suggestionAmount = 500; 
-      bool exists = suggestions.any((s) => s.title.contains(topCat)); 
-      if (!exists) setState(() { suggestions.insert(0, SavingHabit('${t("Меньше трат на", "Spend less on")}: $topCat', suggestionAmount)); }); 
-    } 
-    if(suggestions.isEmpty) { suggestions = [SavingHabit(t('Один кофе вместо двух', 'One coffee instead of two'), 1500), SavingHabit(t('Метро вместо такси', 'Subway instead of taxi'), 2500)]; } 
   }
   
   Future<void> _setLimit(String catName, int limitAmount) async { 
@@ -1580,39 +1665,42 @@ class _PlanScreenState extends State<PlanScreen> {
     
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
-      builder: (c) => StatefulBuilder(
-        builder: (context, setModalState) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
-            child: Container(
-              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min, 
-                  children: [
-                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
-                    const SizedBox(height: 30), Text(t("Установить Лимит", "Set Limit"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
-                    const SizedBox(height: 24), 
-                    SizedBox(
-                      height: 40, 
-                      child: ListView(
-                        scrollDirection: Axis.horizontal, 
-                        children: appCategories.where((c) => c.scope == 'expense' || c.scope == 'both').map((cat) => GestureDetector(onTap: () => setModalState(() => selectedCat = cat.name), child: Container(margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: selectedCat == cat.name ? cat.color.withOpacity(0.2) : Colors.transparent, border: Border.all(color: selectedCat == cat.name ? cat.color : gBorder), borderRadius: BorderRadius.circular(20)), child: Row(children: [Icon(cat.icon, color: selectedCat == cat.name ? cat.color : sText, size: 16), const SizedBox(width: 6), Text(cat.name, style: TextStyle(color: selectedCat == cat.name ? cat.color : sText, fontWeight: FontWeight.bold))])) )).toList()
-                      )
-                    ), 
-                    const SizedBox(height: 24), 
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
-                    const SizedBox(height: 24), 
-                    Row(
-                      children: [
-                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
-                        const SizedBox(width: 12), 
-                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { int val = int.tryParse(amtC.text) ?? 0; _setLimit(selectedCat, val); Navigator.pop(c); }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
-                      ]
-                    ), 
-                    const SizedBox(height: 40)
-                  ]
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (context, setModalState) => ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+              child: Container(
+                padding: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 24), decoration: BoxDecoration(color: sBg), 
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, 
+                    children: [
+                      Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                      const SizedBox(height: 30), Text(t("Установить Лимит", "Set Limit"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                      const SizedBox(height: 24), 
+                      SizedBox(
+                        height: 40, 
+                        child: ListView(
+                          scrollDirection: Axis.horizontal, 
+                          children: appCategories.where((c) => c.scope == 'expense' || c.scope == 'both').map((cat) => GestureDetector(onTap: () => setModalState(() => selectedCat = cat.name), child: Container(margin: const EdgeInsets.only(right: 12), padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: selectedCat == cat.name ? cat.color.withOpacity(0.2) : Colors.transparent, border: Border.all(color: selectedCat == cat.name ? cat.color : gBorder), borderRadius: BorderRadius.circular(20)), child: Row(children: [Icon(cat.icon, color: selectedCat == cat.name ? cat.color : sText, size: 16), const SizedBox(width: 6), Text(t(cat.name, cat.name), style: TextStyle(color: selectedCat == cat.name ? cat.color : sText, fontWeight: FontWeight.bold))])) )).toList()
+                        )
+                      ), 
+                      const SizedBox(height: 24), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                      const SizedBox(height: 24), 
+                      Row(
+                        children: [
+                          Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                          const SizedBox(width: 12), 
+                          Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { int val = int.tryParse(amtC.text) ?? 0; _setLimit(selectedCat, val); Navigator.pop(c); }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                        ]
+                      ), 
+                      const SizedBox(height: 10)
+                    ]
+                  )
                 )
               )
             )
@@ -1628,33 +1716,36 @@ class _PlanScreenState extends State<PlanScreen> {
     
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
-      builder: (c) => StatefulBuilder(
-        builder: (context, setModalState) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
-            child: Container(
-              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min, 
-                  children: [
-                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
-                    const SizedBox(height: 30), Text(t("Новая Цель", "New Goal"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
-                    const SizedBox(height: 24), 
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Название (Например: Машина)", "Name (e.g. Car)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
-                    const SizedBox(height: 16), 
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: targetC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Целевая сумма", "Target Amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
-                    const SizedBox(height: 24), 
-                    Row(
-                      children: [
-                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
-                        const SizedBox(width: 12), 
-                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameC.text.isNotEmpty && targetC.text.isNotEmpty) { setState(() => myGoals.add(BigGoal(id: DateTime.now().millisecondsSinceEpoch.toString(), name: nameC.text, targetAmount: int.parse(targetC.text), savedAmount: 0, color: selectedC, icon: selectedI))); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
-                      ]
-                    ), 
-                    const SizedBox(height: 40)
-                  ]
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (context, setModalState) => ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+              child: Container(
+                padding: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 24), decoration: BoxDecoration(color: sBg), 
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, 
+                    children: [
+                      Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                      const SizedBox(height: 30), Text(t("Новая Цель", "New Goal"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                      const SizedBox(height: 24), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Название (Например: Машина)", "Name (e.g. Car)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                      const SizedBox(height: 16), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: targetC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Целевая сумма", "Target Amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                      const SizedBox(height: 24), 
+                      Row(
+                        children: [
+                          Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                          const SizedBox(width: 12), 
+                          Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameC.text.isNotEmpty && targetC.text.isNotEmpty) { setState(() => myGoals.add(BigGoal(id: DateTime.now().millisecondsSinceEpoch.toString(), name: nameC.text, targetAmount: int.parse(targetC.text), savedAmount: 0, color: selectedC, icon: selectedI))); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                        ]
+                      ), 
+                      const SizedBox(height: 10)
+                    ]
+                  )
                 )
               )
             )
@@ -1668,31 +1759,34 @@ class _PlanScreenState extends State<PlanScreen> {
     TextEditingController amtC = TextEditingController();
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
-      builder: (c) => ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
-          child: Container(
-            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min, 
-                children: [
-                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
-                  const SizedBox(height: 30), Text(t("Пополнить копилку", "Add to Savings"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
-                  const SizedBox(height: 8), Text(goal.name, style: TextStyle(color: sText, fontSize: 16)), 
-                  const SizedBox(height: 24), 
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
-                  const SizedBox(height: 24), 
-                  Row(
-                    children: [
-                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
-                      const SizedBox(width: 12), 
-                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { int val = int.tryParse(amtC.text) ?? 0; if (val > 0) { setState(() { goal.savedAmount += val; }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Пополнить", "Top up"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
-                    ]
-                  ), 
-                  const SizedBox(height: 40)
-                ]
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 24), decoration: BoxDecoration(color: sBg), 
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30), Text(t("Пополнить копилку", "Add to Savings"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 8), Text(goal.name, style: TextStyle(color: sText, fontSize: 16)), 
+                    const SizedBox(height: 24), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 24), 
+                    Row(
+                      children: [
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                        const SizedBox(width: 12), 
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { int val = int.tryParse(amtC.text) ?? 0; if (val > 0) { setState(() { goal.savedAmount += val; }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Пополнить", "Top up"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                      ]
+                    ), 
+                    const SizedBox(height: 10)
+                  ]
+                )
               )
             )
           )
@@ -1705,77 +1799,36 @@ class _PlanScreenState extends State<PlanScreen> {
     TextEditingController titleC = TextEditingController(), amtC = TextEditingController();
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
-      builder: (c) => ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
-          child: Container(
-            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24), decoration: BoxDecoration(color: sBg), 
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min, 
-                children: [
-                  Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
-                  const SizedBox(height: 30), Text(t("Своя цель", "Custom Goal"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
-                  const SizedBox(height: 24), 
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: titleC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Например: Без фастфуда", "e.g. No fastfood"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
-                  const SizedBox(height: 16), 
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Экономия за 1 раз", "Save amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
-                  const SizedBox(height: 24), 
-                  Row(
-                    children: [
-                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
-                      const SizedBox(width: 12), 
-                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(titleC.text.isNotEmpty && amtC.text.isNotEmpty) { setState(() => activeHabits.add(SavingHabit(titleC.text, int.parse(amtC.text)))); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
-                    ]
-                  ), 
-                  const SizedBox(height: 40)
-                ]
-              )
-            )
-          )
-        )
-      )
-    );
-  }
-
-  void _showAIChat() {
-    showModalBottomSheet(
-      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
-      builder: (c) => ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
-          child: Container(
-            height: MediaQuery.of(context).size.height * 0.85, padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), decoration: BoxDecoration(color: sBg), 
-            child: Column(
-              children: [
-                const SizedBox(height: 12), Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
-                const SizedBox(height: 20), Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.auto_awesome, color: appAccentColor), const SizedBox(width: 8), Text("FlowIQ AI", style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))]), 
-                const SizedBox(height: 20), 
-                Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.all(20), 
-                    children: [
-                      Align(alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20).copyWith(topLeft: Radius.zero)), child: Text(t("Привет! Я ваш финансовый ИИ-ассистент. О чем поговорим?", "Hi! I am your financial AI assistant."), style: TextStyle(color: pText, fontSize: 16)))), 
-                      const SizedBox(height: 20), 
-                      Align(alignment: Alignment.centerRight, child: Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: appAccentColor.withOpacity(0.2), borderRadius: BorderRadius.circular(20).copyWith(topRight: Radius.zero)), child: Text(t("Смогу ли я накопить 300 000 ₸ к отпуску?", "Can I save 300k for vacation?"), style: TextStyle(color: pText, fontSize: 16)))), 
-                      const SizedBox(height: 20), 
-                      Align(alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(20).copyWith(topLeft: Radius.zero)), child: Text(t("Да, если вы урежете лимит на 'Рестораны' на 15 000 и будете соблюдать вызовы.\n\n(Интеграция ChatGPT API в разработке...)", "Yes, if you cut Restaurants limit and follow habits.\n\n(ChatGPT API integration in progress...)"), style: TextStyle(color: pText, fontSize: 16))))
-                    ]
-                  )
-                ), 
-                Container(
-                  padding: const EdgeInsets.all(20), 
-                  child: Row(
-                    children: [
-                      Expanded(child: Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(24)), child: TextField(style: TextStyle(color: pText), decoration: InputDecoration(hintText: t("Сообщение...", "Message..."), hintStyle: TextStyle(color: sText), border: InputBorder.none)))), 
-                      const SizedBox(width: 12), 
-                      CircleAvatar(radius: 24, backgroundColor: appAccentColor, child: Icon(Icons.send, color: accentTextColor))
-                    ]
-                  )
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 24), decoration: BoxDecoration(color: sBg), 
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black26 : Colors.white24, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30), Text(t("Своя цель", "Custom Goal"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 24), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: titleC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Например: Без фастфуда", "e.g. No fastfood"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 16), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Экономия за 1 раз", "Save amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    const SizedBox(height: 24), 
+                    Row(
+                      children: [
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: gBorder))), onPressed: () => Navigator.pop(c), child: Text(t("Отмена", "Cancel"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                        const SizedBox(width: 12), 
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(titleC.text.isNotEmpty && amtC.text.isNotEmpty) { setState(() => activeHabits.add(SavingHabit(titleC.text, int.parse(amtC.text)))); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                      ]
+                    ), 
+                    const SizedBox(height: 10)
+                  ]
                 )
-              ]
+              )
             )
           )
         )
@@ -1797,7 +1850,6 @@ class _PlanScreenState extends State<PlanScreen> {
 
     Widget proContent = Scaffold(
       backgroundColor: Colors.transparent,
-      floatingActionButton: Padding(padding: const EdgeInsets.only(bottom: 80.0), child: FloatingActionButton.extended(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), onPressed: _showAIChat, icon: const Icon(Icons.auto_awesome), label: Text(t("Чат с ИИ", "AI Chat"), style: const TextStyle(fontWeight: FontWeight.bold)))),
       body: SafeArea(
         bottom: false, 
         child: ListView(
@@ -1839,7 +1891,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
                           children: [
-                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(g.icon, color: appAccentColor, size: 20), const SizedBox(width: 8), Text(g.name, style: TextStyle(color: pText, fontWeight: FontWeight.bold))]), Text('${(pct*100).toInt()}%', style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold))]), 
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(g.icon, color: appAccentColor, size: 20), const SizedBox(width: 8), Expanded(child: Text(g.name, style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))]), Text('${(pct*100).toInt()}%', style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold))]), 
                             const SizedBox(height: 16), 
                             Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: appAccentColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: appAccentColor.withOpacity(0.5), blurRadius: 8)])))]), 
                             const SizedBox(height: 12), 
@@ -1877,7 +1929,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
                           children: [
-                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(catObj.icon, color: catObj.color, size: 16), const SizedBox(width: 8), Text(b.category, style: TextStyle(color: pText, fontWeight: FontWeight.bold))]), Text('${formatMoney(b.spent)} / ${formatMoney(b.limit)}', style: TextStyle(color: sText, fontSize: 12))]), 
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(catObj.icon, color: catObj.color, size: 16), const SizedBox(width: 8), Expanded(child: Text(t(b.category, b.category), style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))]), Text('${formatMoney(b.spent)} / ${formatMoney(b.limit)}', style: TextStyle(color: sText, fontSize: 12))]), 
                             const SizedBox(height: 16), 
                             Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * percent, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
                             const SizedBox(height: 12), 
@@ -1888,7 +1940,7 @@ class _PlanScreenState extends State<PlanScreen> {
                     ); 
                   }).toList()
                 )
-              ), 
+              ),
             const SizedBox(height: 40),
             
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(t('Микро-Привычки', 'Micro Habits'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold))), IconButton(icon: Icon(Icons.add_circle, color: appAccentColor, size: 28), onPressed: _addCustomHabit)]), 
@@ -1920,7 +1972,7 @@ class _PlanScreenState extends State<PlanScreen> {
                               style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), 
                               onPressed: () { 
                                 setState(() { h.timesResisted++; }); 
-                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('🎉 ${t("Отлично! +", "Great! +")}${formatMoney(h.savePerDay)} $appCurrency. ${t("Закиньте их в копилку!", "Add it to your piggy bank!")}'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating)); 
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('🎉 Отлично! +${formatMoney(h.savePerDay)} $appCurrency. Закиньте их в копилку!'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating)); 
                               }, 
                               child: Text(t("Я удержался!", "I resisted!"), style: const TextStyle(fontWeight: FontWeight.bold))
                             )
@@ -1931,44 +1983,12 @@ class _PlanScreenState extends State<PlanScreen> {
                   )).toList()
                 )
               ), 
-            const SizedBox(height: 40),
-            
-            Text(t('ИИ рекомендует', 'AI Recommends'), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), 
-            const SizedBox(height: 16),
-            
-            SizedBox(
-              height: 180, 
-              child: ListView(
-                scrollDirection: Axis.horizontal, clipBehavior: Clip.none, 
-                children: suggestions.map((s) => GlassCard(
-                  margin: const EdgeInsets.only(right: 16), padding: const EdgeInsets.all(20), 
-                  child: SizedBox(
-                    width: 160, 
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start, 
-                      children: [
-                        Expanded(child: Text(s.title, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold), maxLines: 2)), 
-                        Text('+ ${formatMoney(s.savePerDay)} $appCurrency/${t("раз", "time")}', style: const TextStyle(color: Colors.green, fontSize: 14, fontWeight: FontWeight.bold)), 
-                        const SizedBox(height: 16), 
-                        SizedBox(
-                          width: double.infinity, height: 40, 
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: pText, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: gBorder))), 
-                            onPressed: () => setState(() { activeHabits.add(SavingHabit(s.title, s.savePerDay)); suggestions.remove(s); }), 
-                            child: Text(t("Взять вызов", "Take challenge"), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))
-                          )
-                        )
-                      ]
-                    )
-                  )
-                )).toList()
-              )
-            )
+            const SizedBox(height: 40)
           ]
         )
       )
     );
-
+    
     if (isProUser) return proContent;
     return Stack(
       children: [ 
@@ -1999,6 +2019,7 @@ class _PlanScreenState extends State<PlanScreen> {
     );
   }
 }
+// === ЭКРАН ПРОФИЛЯ ===
 class ProfileScreen extends StatefulWidget { 
   final String? currentBg; 
   final Function(String?) onBgChanged; 
@@ -2077,7 +2098,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
                                 onPressed: () async { 
                                   if(tempPin.length == 4) { 
-                                    final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_pin', tempPin); await prefs.setBool('use_biometrics', true); await prefs.setBool('use_face_id', true); setState(() => useFaceId = true); Navigator.pop(c); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Защита включена!', 'Protection enabled!')), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating)); 
+                                    final prefs = await SharedPreferences.getInstance(); 
+                                    await secureStorage.write(key: 'app_pin', value: tempPin); 
+                                    await prefs.setBool('use_biometrics', true); 
+                                    await prefs.setBool('use_face_id', true); 
+                                    setState(() => useFaceId = true); 
+                                    Navigator.pop(c); 
+                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Защита включена!', 'Protection enabled!')), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating)); 
                                   } 
                                 }, 
                                 child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
@@ -2096,18 +2123,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
         )
       );
     } else { 
-      final prefs = await SharedPreferences.getInstance(); await prefs.setBool('use_face_id', false); await prefs.remove('app_pin'); setState(() => useFaceId = false); 
+      final prefs = await SharedPreferences.getInstance(); 
+      await prefs.setBool('use_face_id', false); 
+      await secureStorage.delete(key: 'app_pin'); 
+      setState(() => useFaceId = false); 
     }
   }
 
   void _openWhatsApp() async { final Uri url = Uri.parse('whatsapp://send?phone=87474993818'); if (await canLaunchUrl(url)) { await launchUrl(url); } else { final Uri webUrl = Uri.parse('https://wa.me/87474993818'); if (await canLaunchUrl(webUrl)) { await launchUrl(webUrl, mode: LaunchMode.externalApplication); } } }
   
   Widget _buildSwitchTile(IconData icon, String title, bool value, Function(bool) onChanged, {bool isProFeature = false}) { 
-    return GlassCard(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(children: [Icon(icon, color: sText, size: 24), const SizedBox(width: 16), Expanded(child: Row(children: [Expanded(child: Text(title, style: TextStyle(color: pText, fontSize: 16))), if(isProFeature && !isProUser) Padding(padding: const EdgeInsets.only(left: 8), child: Icon(Icons.lock, color: appAccentColor, size: 14))])), Switch(value: value, onChanged: onChanged, activeColor: appAccentColor, activeTrackColor: appAccentColor.withOpacity(0.3), inactiveThumbColor: Colors.grey, inactiveTrackColor: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1))])); 
+    return GlassCard(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(children: [Icon(icon, color: sText, size: 24), const SizedBox(width: 16), Expanded(child: Row(children: [Expanded(child: Text(t(title, title), style: TextStyle(color: pText, fontSize: 16))), if(isProFeature && !isProUser) Padding(padding: const EdgeInsets.only(left: 8), child: Icon(Icons.lock, color: appAccentColor, size: 14))])), Switch(value: value, onChanged: onChanged, activeColor: appAccentColor, activeTrackColor: appAccentColor.withOpacity(0.3), inactiveThumbColor: Colors.grey, inactiveTrackColor: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1))])); 
   }
   
   Widget _buildActionTile(IconData icon, String title, {bool isDestructive = false, Color? iconColor, VoidCallback? onTap}) { 
-    return GlassCard(onTap: onTap, margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), child: Row(children: [Icon(icon, color: isDestructive ? const Color(0xFFFF3366) : (iconColor ?? sText), size: 24), const SizedBox(width: 16), Expanded(child: Text(title, style: TextStyle(color: isDestructive ? const Color(0xFFFF3366) : pText, fontSize: 16, fontWeight: isDestructive ? FontWeight.bold : FontWeight.normal))), if (!isDestructive) Icon(Icons.chevron_right, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.2), size: 24)])); 
+    return GlassCard(onTap: onTap, margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), child: Row(children: [Icon(icon, color: isDestructive ? const Color(0xFFFF3366) : (iconColor ?? sText), size: 24), const SizedBox(width: 16), Expanded(child: Text(t(title, title), style: TextStyle(color: isDestructive ? const Color(0xFFFF3366) : pText, fontSize: 16, fontWeight: isDestructive ? FontWeight.bold : FontWeight.normal))), if (!isDestructive) Icon(Icons.chevron_right, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.2), size: 24)])); 
   }
 
   @override 
@@ -2136,14 +2166,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
           
           Text(t('УПРАВЛЕНИЕ', 'MANAGEMENT'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
           const SizedBox(height: 16), 
-          _buildActionTile(Icons.account_balance_wallet, t('Мои счета (Баланс)', 'My Accounts'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => AccountsManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
-          _buildActionTile(Icons.autorenew, t('Повторяющиеся платежи', 'Recurring Payments'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => RecurringManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
-          _buildActionTile(Icons.category_outlined, t('Категории', 'Categories'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => CategoryManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          _buildActionTile(Icons.account_balance_wallet, 'Мои счета (Баланс)', onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => AccountsManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          _buildActionTile(Icons.handshake_outlined, 'Долги', onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => DebtsManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }),
+          _buildActionTile(Icons.autorenew, 'Повторяющиеся платежи', onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => RecurringManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          _buildActionTile(Icons.category_outlined, 'Категории', onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => CategoryManagerScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
           const SizedBox(height: 32),
 
           Text(t('ВНЕШНИЙ ВИД И ЯЗЫК', 'APPEARANCE & LANG'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
           const SizedBox(height: 16), 
-          _buildActionTile(Icons.language, t('Язык и Валюта', 'Language & Currency'), onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => LocalizationScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
+          _buildActionTile(Icons.language, 'Язык и Валюта', onTap: () async { await Navigator.push(context, MaterialPageRoute(builder: (_) => LocalizationScreen(currentBg: widget.currentBg))); widget.onSettingsUpdated(); widget.onRefresh(); }), 
           const SizedBox(height: 12),
           
           SizedBox(
@@ -2167,42 +2198,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ), 
           const SizedBox(height: 16), 
           
-          _buildSwitchTile(Icons.blur_on, t('Размытие обоев', 'Wallpaper Blur'), globalIsBgBlurred, (val) async { final prefs = await SharedPreferences.getInstance(); await prefs.setBool('bg_blur', val); widget.onSettingsUpdated(); }), 
+          _buildSwitchTile(Icons.blur_on, 'Размытие обоев', globalIsBgBlurred, (val) async { final prefs = await SharedPreferences.getInstance(); await prefs.setBool('bg_blur', val); widget.onSettingsUpdated(); }), 
           const SizedBox(height: 32), 
           
           Text(t('НАСТРОЙКИ', 'SETTINGS'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
           const SizedBox(height: 16), 
-          _buildActionTile(Icons.touch_app, t('Быстрое добавление (Двойной тап)', 'Double Tap Quick Add'), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DoubleTapSetupScreen(currentBg: widget.currentBg)))),
-          _buildSwitchTile(Icons.shield_outlined, t('Защита приложения', 'App Protection'), useFaceId, _toggleFaceId, isProFeature: true), 
-          _buildSwitchTile(Icons.notifications_active_outlined, t('Умные уведомления', 'Smart Notifications'), pushNotifications, (val) { if(!isProUser){ ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Доступно в PRO', 'PRO feature')), backgroundColor: sBg)); return; } setState(() => pushNotifications = val); }, isProFeature: true), 
+          _buildActionTile(Icons.touch_app, 'Быстрое добавление (Двойной тап)', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DoubleTapSetupScreen(currentBg: widget.currentBg)))),
+          _buildSwitchTile(Icons.shield_outlined, 'Защита приложения', useFaceId, _toggleFaceId, isProFeature: true), 
+          _buildSwitchTile(Icons.notifications_active_outlined, 'Умные уведомления', pushNotifications, (val) { if(!isProUser){ ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('Доступно в PRO', 'PRO feature')), backgroundColor: sBg)); return; } setState(() => pushNotifications = val); }, isProFeature: true), 
           const SizedBox(height: 32), 
           
           Text(t('ПОДДЕРЖКА', 'SUPPORT'), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
           const SizedBox(height: 16), 
-          _buildActionTile(Icons.star_rounded, t('Оценить FlowIQ', 'Rate FlowIQ'), iconColor: Colors.amber), 
-          _buildActionTile(Icons.chat_bubble_outline, t('Написать в поддержку', 'Contact Support'), onTap: _openWhatsApp), 
-          _buildActionTile(Icons.logout, t('Выйти из аккаунта', 'Logout'), isDestructive: true), 
+          _buildActionTile(Icons.star_rounded, 'Оценить FlowIQ', iconColor: Colors.amber), 
+          _buildActionTile(Icons.chat_bubble_outline, 'Написать в поддержку', onTap: _openWhatsApp), 
+          _buildActionTile(Icons.logout, 'Выйти из аккаунта', isDestructive: true), 
           const SizedBox(height: 40),
           
           _buildActionTile(Icons.delete_forever, 'Сброс приложения (Dev Mode)', isDestructive: true, onTap: () { 
             showDialog(
               context: context, 
               builder: (c) => AlertDialog(
-                backgroundColor: sBg, title: Text("Сброс всех данных", style: TextStyle(color: pText)), 
-                content: Text("Это удалит ВСЕ транзакции из базы, обнулит подписку PRO, обои и дни входа.\nПродолжить?", style: TextStyle(color: sText)), 
+                backgroundColor: sBg, title: Text(t("Сброс всех данных", "Reset all data"), style: TextStyle(color: pText)), 
+                content: Text(t("Это удалит ВСЕ транзакции из базы, обнулит подписку PRO, обои и дни входа.\nПродолжить?", "This will delete ALL data.\nContinue?"), style: TextStyle(color: sText)), 
                 actions: [
-                  TextButton(onPressed: ()=>Navigator.pop(c), child: const Text("Отмена")), 
+                  TextButton(onPressed: ()=>Navigator.pop(c), child: Text(t("Отмена", "Cancel"))), 
                   ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), 
                     onPressed: () async { 
-                      Navigator.pop(c); final prefs = await SharedPreferences.getInstance(); await prefs.clear(); 
-                      await Supabase.instance.client.from('transactions').delete().gte('amount', 0); 
+                      Navigator.pop(c); 
+                      final prefs = await SharedPreferences.getInstance(); await prefs.clear(); 
+                      await secureStorage.deleteAll(); 
+                      await Supabase.instance.client.from('transactions').delete().eq('user_id', myDeviceId); 
                       appCategories = defaultCategories.map((cat) => CategoryItem(cat.name, cat.icon, cat.color, scope: cat.scope)).toList(); 
-                      isProUser = false; myAccounts = [BankAccount(id: '1', name: t('Наличные', 'Cash'), balance: 0, color: Colors.green, icon: Icons.payments)]; myGoals = []; myRecurring = []; 
+                      isProUser = false; useSingleAccount = false; 
+                      myAccounts = [BankAccount(id: '1', name: t('Наличные', 'Cash'), balance: 0, color: Colors.green, icon: Icons.payments)]; myGoals = []; myRecurring = []; myDebts = [];
                       saveLocalData(); widget.onSettingsUpdated(); widget.onRefresh(); 
                       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const RootScreen())); 
                     }, 
-                    child: const Text("Сбросить", style: TextStyle(color: Colors.white))
+                    child: Text(t("Сбросить", "Reset"), style: const TextStyle(color: Colors.white))
                   )
                 ]
               )
@@ -2222,6 +2256,21 @@ class LocalizationScreen extends StatefulWidget {
 }
 
 class _LocalizationScreenState extends State<LocalizationScreen> {
+  final List<Map<String, String>> allCurrencies = [
+    {'symbol': '₸', 'name': 'Тенге (KZT)'}, {'symbol': '₽', 'name': 'Рубль (RUB)'},
+    {'symbol': '\$', 'name': 'Доллар (USD)'}, {'symbol': '€', 'name': 'Евро (EUR)'},
+    {'symbol': '£', 'name': 'Фунт стерлингов (GBP)'}, {'symbol': '¥', 'name': 'Юань / Иена (CNY/JPY)'},
+    {'symbol': '₣', 'name': 'Швейц. франк (CHF)'}, {'symbol': 'د.إ', 'name': 'Дирхам (AED)'},
+    {'symbol': 'Br', 'name': 'Бел. рубль (BYN)'}, {'symbol': '₴', 'name': 'Гривна (UAH)'},
+    {'symbol': '₼', 'name': 'Манат (AZN)'}, {'symbol': 'soʻm', 'name': 'Сум (UZS)'},
+    {'symbol': 'с', 'name': 'Сом (KGS)'}, {'symbol': 'SM', 'name': 'Сомони (TJS)'},
+    {'symbol': '֏', 'name': 'Драм (AMD)'}, {'symbol': 'ლ', 'name': 'Лари (GEL)'},
+  ];
+
+  final List<Map<String, String>> allLanguages = [
+    {'code': 'ru', 'name': 'Русский'}, {'code': 'en', 'name': 'English'}, {'code': 'kk', 'name': 'Қазақша'},
+  ];
+
   @override 
   Widget build(BuildContext context) {
     return Stack(
@@ -2236,20 +2285,28 @@ class _LocalizationScreenState extends State<LocalizationScreen> {
           body: ListView(
             padding: const EdgeInsets.all(20), 
             children: [
-              Text(t("ВАЛЮТА", "CURRENCY"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
-              const SizedBox(height: 16), 
-              ...['₸', '\$', '€', '₽', '¥', '£'].map((cur) => GlassCard(
-                onTap: () async { final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_currency', cur); setState(() => appCurrency = cur); }, 
-                margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), customBorder: appCurrency == cur ? appAccentColor : null, 
-                child: Row(children: [Text(cur, style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)), const Spacer(), if(appCurrency == cur) Icon(Icons.check_circle, color: appAccentColor)])
-              )), 
-              const SizedBox(height: 30), 
               Text(t("ЯЗЫК", "LANGUAGE"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
               const SizedBox(height: 16), 
-              ...[{'code':'ru', 'name':'Русский'}, {'code':'en', 'name':'English'}, {'code':'kk', 'name':'Қазақша'}].map((lang) => GlassCard(
+              ...allLanguages.map((lang) => GlassCard(
                 onTap: () async { final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_language', lang['code']!); setState(() => appLanguage = lang['code']!); }, 
                 margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), customBorder: appLanguage == lang['code'] ? appAccentColor : null, 
-                child: Row(children: [Text(lang['name']!, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), const Spacer(), if(appLanguage == lang['code']) Icon(Icons.check_circle, color: appAccentColor)])
+                child: Row(children: [Text(lang['name']!, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)), const Spacer(), if(appLanguage == lang['code']) Icon(Icons.check_circle, color: appAccentColor)])
+              )),
+              const SizedBox(height: 30), 
+              Text(t("ВАЛЮТА", "CURRENCY"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+              const SizedBox(height: 16), 
+              ...allCurrencies.map((cur) => GlassCard(
+                onTap: () async { final prefs = await SharedPreferences.getInstance(); await prefs.setString('app_currency', cur['symbol']!); setState(() => appCurrency = cur['symbol']!); }, 
+                margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), customBorder: appCurrency == cur['symbol'] ? appAccentColor : null, 
+                child: Row(
+                  children: [
+                    Container(width: 44, height: 44, decoration: BoxDecoration(color: appCurrency == cur['symbol'] ? appAccentColor.withOpacity(0.2) : (globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05)), shape: BoxShape.circle), child: Center(child: Text(cur['symbol']!, style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)))), 
+                    const SizedBox(width: 16),
+                    Text(cur['name']!, style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)), 
+                    const Spacer(), 
+                    if(appCurrency == cur['symbol']) Icon(Icons.check_circle, color: appAccentColor)
+                  ]
+                )
               ))
             ]
           )
@@ -2301,6 +2358,60 @@ class RecurringManagerScreen extends StatefulWidget {
 
 class _RecurringManagerScreenState extends State<RecurringManagerScreen> {
   void _deleteRec(int index) { setState(() { myRecurring.removeAt(index); saveLocalData(); }); }
+
+  void _showAddRecurringSheet() {
+    TextEditingController titleC = TextEditingController(), amtC = TextEditingController(), dayC = TextEditingController();
+    String selectedType = 'expense';
+    String selectedCat = appCategories.firstWhere((c) => c.scope == 'expense' || c.scope == 'both').name;
+    String selectedAcc = myAccounts.isNotEmpty ? myAccounts[0].id : '';
+
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (context, setModalState) => ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+              child: Container(
+                padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: sBg), 
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, 
+                    children: [
+                      Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2))), 
+                      const SizedBox(height: 30), Text(t("Новый платеж", "New Payment"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                      const SizedBox(height: 24),
+                      Container(
+                        padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+                        child: Row(
+                          children: [
+                            Expanded(child: GestureDetector(onTap: () => setModalState(()=> selectedType = 'expense'), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'expense' ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Расход", "Expense"), style: TextStyle(color: selectedType == 'expense' ? pText : sText, fontWeight: FontWeight.bold)))))), 
+                            Expanded(child: GestureDetector(onTap: () => setModalState(()=> selectedType = 'income'), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'income' ? (globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1)) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Доход", "Income"), style: TextStyle(color: selectedType == 'income' ? pText : sText, fontWeight: FontWeight.bold))))))
+                          ]
+                        )
+                      ),
+                      const SizedBox(height: 16),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: titleC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Название (Netflix)", "Title (e.g. Netflix)"), hintStyle: TextStyle(color: sText)))), 
+                      const SizedBox(height: 16),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Сумма", "Amount"), hintStyle: TextStyle(color: sText)))), 
+                      const SizedBox(height: 16),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: dayC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("День месяца (1-31)", "Day of month (1-31)"), hintStyle: TextStyle(color: sText)))), 
+                      const SizedBox(height: 24),
+                      SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(titleC.text.isNotEmpty && amtC.text.isNotEmpty && dayC.text.isNotEmpty) { setState(() { myRecurring.add(RecurringTx(id: DateTime.now().millisecondsSinceEpoch.toString(), title: titleC.text, amount: int.parse(amtC.text), type: selectedType, category: selectedCat, accountId: selectedAcc, dayOfMonth: int.parse(dayC.text))); }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      const SizedBox(height: 10)
+                    ]
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
   @override Widget build(BuildContext context) {
     return Stack(
       children: [
@@ -2311,7 +2422,7 @@ class _RecurringManagerScreenState extends State<RecurringManagerScreen> {
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Повторяющиеся платежи', 'Recurring Payments'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
-          floatingActionButton: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, onPressed: () { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('В разработке...', 'Coming soon...')), backgroundColor: Colors.orange)); }, child: const Icon(Icons.add)), 
+          floatingActionButton: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, onPressed: _showAddRecurringSheet, child: const Icon(Icons.add)), 
           body: myRecurring.isEmpty 
             ? Center(child: Text(t("Нет активных подписок", "No active subscriptions"), style: TextStyle(color: sText))) 
             : ListView.builder(
@@ -2344,6 +2455,58 @@ class AccountsManagerScreen extends StatefulWidget {
 }
 
 class _AccountsManagerScreenState extends State<AccountsManagerScreen> {
+  
+  void _showAddAccountSheet() {
+    TextEditingController nameC = TextEditingController();
+    TextEditingController balC = TextEditingController();
+    Color selColor = availableColors[0];
+    IconData selIcon = Icons.account_balance_wallet;
+
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (context, setModalState) => ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+              child: Container(
+                padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: sBg), 
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min, 
+                    children: [
+                      Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2)))), 
+                      const SizedBox(height: 30), 
+                      Center(child: Text(t("Новый счет", "New Account"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold))), 
+                      const SizedBox(height: 24),
+                      Row(children: [Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: selColor.withOpacity(0.2), borderRadius: BorderRadius.circular(16)), child: Icon(selIcon, color: selColor, size: 32)), const SizedBox(width: 16), Expanded(child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold), decoration: InputDecoration(hintText: t("Название", "Name"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none)))]), 
+                      const SizedBox(height: 16),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: balC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Начальный баланс", "Initial Balance"), hintStyle: TextStyle(color: sText)))), 
+                      const SizedBox(height: 24),
+                      Text(t("ВЫБЕРИ ЦВЕТ", "CHOOSE COLOR"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+                      const SizedBox(height: 12),
+                      SizedBox(height: 50, child: ListView.builder(scrollDirection: Axis.horizontal, itemCount: availableColors.length, itemBuilder: (context, index) { final color = availableColors[index]; return GestureDetector(onTap: () => setModalState(() => selColor = color), child: Container(margin: const EdgeInsets.only(right: 12), width: 50, decoration: BoxDecoration(color: color, shape: BoxShape.circle, border: Border.all(color: selColor == color ? pText : Colors.transparent, width: 3)))); })), 
+                      const SizedBox(height: 24),
+                      Text(t("ВЫБЕРИ ИКОНКУ", "CHOOSE ICON"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
+                      const SizedBox(height: 12),
+                      SizedBox(height: 200, child: GridView.builder(gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 5, mainAxisSpacing: 16, crossAxisSpacing: 16), itemCount: availableIcons.length, itemBuilder: (context, index) { final icon = availableIcons[index]; return GestureDetector(onTap: () => setModalState(() => selIcon = icon), child: Container(decoration: BoxDecoration(color: selIcon == icon ? selColor.withOpacity(0.2) : (globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05)), borderRadius: BorderRadius.circular(16), border: Border.all(color: selIcon == icon ? selColor : Colors.transparent)), child: Icon(icon, color: selIcon == icon ? selColor : sText))); })), 
+                      const SizedBox(height: 16),
+                      SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameC.text.isNotEmpty) { setState(() { myAccounts.add(BankAccount(id: DateTime.now().millisecondsSinceEpoch.toString(), name: nameC.text, balance: int.tryParse(balC.text) ?? 0, color: selColor, icon: selIcon)); }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Создать", "Create"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      const SizedBox(height: 10)
+                    ]
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
   void _showEditBalanceSheet(BankAccount acc) {
     String tempAmt = "0";
     showModalBottomSheet(
@@ -2419,26 +2582,39 @@ class _AccountsManagerScreenState extends State<AccountsManagerScreen> {
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Мои счета', 'My Accounts'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
-          body: ListView.builder(
-            padding: const EdgeInsets.all(20), itemCount: myAccounts.length, 
-            itemBuilder: (context, index) { 
-              final acc = myAccounts[index]; 
-              return Dismissible(
-                key: Key(acc.id), direction: myAccounts.length > 1 ? DismissDirection.endToStart : DismissDirection.none, 
-                confirmDismiss: (direction) async { 
-                  return await showGeneralDialog<bool>(
-                    context: context, pageBuilder: (ctx, a1, a2) => Container(), 
-                    transitionBuilder: (ctx, a1, a2, child) => ScaleTransition(scale: a1, child: AlertDialog(backgroundColor: Colors.transparent, contentPadding: EdgeInsets.zero, content: GlassCard(customBorder: Colors.red.withOpacity(0.5), child: Column(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 56), const SizedBox(height: 16), Text(t('Удалить счет?', 'Delete account?'), style: TextStyle(color: pText, fontSize: 22, fontWeight: FontWeight.bold)), const SizedBox(height: 24), Row(children: [Expanded(child: TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t("Отмена", "Cancel"), style: const TextStyle(color: Colors.grey, fontSize: 16)))), Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), onPressed: () => Navigator.pop(context, true), child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))))])]))))
-                  ); 
-                }, 
-                onDismissed: (_) => _deleteAccount(index), 
-                background: Container(margin: const EdgeInsets.only(bottom: 12), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), decoration: BoxDecoration(color: const Color(0xFFFF3366), borderRadius: BorderRadius.circular(20)), child: const Icon(Icons.delete, color: Colors.white)), 
-                child: GlassCard(
-                  margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), onTap: () => _showEditBalanceSheet(acc), 
-                  child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: acc.color.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(acc.icon, color: acc.color)), const SizedBox(width: 16), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(acc.name, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text('${formatMoney(acc.balance)} $appCurrency', style: TextStyle(color: sText, fontSize: 14))])), Icon(Icons.edit, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.3), size: 20)])
+          floatingActionButton: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, onPressed: _showAddAccountSheet, child: const Icon(Icons.add)), 
+          body: ListView(
+            padding: const EdgeInsets.all(20), 
+            children: [
+              GlassCard(
+                margin: const EdgeInsets.only(bottom: 24), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), 
+                child: Row(
+                  children: [
+                    Icon(Icons.account_balance_wallet, color: appAccentColor, size: 24), const SizedBox(width: 16), 
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t("Использовать общий счет", "Use single account"), style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)), Text(t("Не спрашивать счет при расходах", "Do not ask for account"), style: TextStyle(color: sText, fontSize: 12))])), 
+                    Switch(value: useSingleAccount, onChanged: (val) { setState(() { useSingleAccount = val; }); saveLocalData(); }, activeColor: appAccentColor)
+                  ]
                 )
-              ); 
-            }
+              ),
+              ...myAccounts.asMap().entries.map((entry) {
+                int index = entry.key; final acc = entry.value;
+                return Dismissible(
+                  key: Key(acc.id), direction: myAccounts.length > 1 ? DismissDirection.endToStart : DismissDirection.none, 
+                  confirmDismiss: (direction) async { 
+                    return await showGeneralDialog<bool>(
+                      context: context, pageBuilder: (ctx, a1, a2) => Container(), 
+                      transitionBuilder: (ctx, a1, a2, child) => ScaleTransition(scale: a1, child: AlertDialog(backgroundColor: Colors.transparent, contentPadding: EdgeInsets.zero, content: GlassCard(customBorder: Colors.red.withOpacity(0.5), child: Column(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 56), const SizedBox(height: 16), Text(t('Удалить счет?', 'Delete account?'), style: TextStyle(color: pText, fontSize: 22, fontWeight: FontWeight.bold)), const SizedBox(height: 24), Row(children: [Expanded(child: TextButton(onPressed: () => Navigator.pop(context, false), child: Text(t("Отмена", "Cancel"), style: const TextStyle(color: Colors.grey, fontSize: 16)))), Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), onPressed: () => Navigator.pop(context, true), child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))))])]))))
+                    ); 
+                  }, 
+                  onDismissed: (_) => _deleteAccount(index), 
+                  background: Container(margin: const EdgeInsets.only(bottom: 12), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), decoration: BoxDecoration(color: const Color(0xFFFF3366), borderRadius: BorderRadius.circular(20)), child: const Icon(Icons.delete, color: Colors.white)), 
+                  child: GlassCard(
+                    margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), onTap: () => _showEditBalanceSheet(acc), 
+                    child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: acc.color.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(acc.icon, color: acc.color)), const SizedBox(width: 16), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(acc.name, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 4), Text('${formatMoney(acc.balance)} $appCurrency', style: TextStyle(color: sText, fontSize: 14))])), Icon(Icons.edit, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.3), size: 20)])
+                  )
+                ); 
+              }).toList()
+            ]
           )
         )
       ]
@@ -2478,7 +2654,7 @@ class _CategoryManagerScreenState extends State<CategoryManagerScreen> {
                   ); 
                 }, 
                 onDismissed: (_) => _deleteCategory(index), background: Container(margin: const EdgeInsets.only(bottom: 12), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), decoration: BoxDecoration(color: const Color(0xFFFF3366), borderRadius: BorderRadius.circular(20)), child: const Icon(Icons.delete, color: Colors.white)), 
-                child: GlassCard(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), onTap: () => _openEditor(existingCat: cat), child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: cat.color.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(cat.icon, color: cat.color)), const SizedBox(width: 16), Expanded(child: Text(cat.name, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold))), Icon(Icons.edit, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.3), size: 20)]))
+                child: GlassCard(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), onTap: () => _openEditor(existingCat: cat), child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: cat.color.withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Icon(cat.icon, color: cat.color)), const SizedBox(width: 16), Expanded(child: Text(t(cat.name, cat.name), style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold))), Icon(Icons.edit, color: globalIsLightMode ? Colors.black26 : Colors.white.withOpacity(0.3), size: 20)]))
               ); 
             }
           )
@@ -2530,3 +2706,260 @@ class _CategoryEditorSheetState extends State<CategoryEditorSheet> {
     );
   }
 }
+
+// === ЭКРАН УПРАВЛЕНИЯ ДОЛГАМИ ===
+class DebtsManagerScreen extends StatefulWidget { 
+  final String? currentBg; const DebtsManagerScreen({super.key, this.currentBg}); 
+  @override State<DebtsManagerScreen> createState() => _DebtsManagerScreenState(); 
+}
+
+class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
+  void _deleteDebt(int index) { setState(() { myDebts.removeAt(index); saveLocalData(); }); }
+
+  void _showAddDebtSheet() {
+    TextEditingController nameC = TextEditingController(), amtC = TextEditingController();
+    String selectedType = 'i_owe'; DateTime selectedDate = DateTime.now().add(const Duration(days: 30));
+
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (context, setModalState) => ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+              child: Container(
+                padding: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 24), decoration: BoxDecoration(color: sBg), 
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, 
+                    children: [
+                      Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2))), 
+                      const SizedBox(height: 30), Text(t("Добавить долг", "Add Debt"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                      const SizedBox(height: 24),
+                      Container(
+                        padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)), 
+                        child: Row(
+                          children: [
+                            Expanded(child: GestureDetector(onTap: () => setModalState(()=> selectedType = 'i_owe'), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'i_owe' ? Colors.redAccent.withOpacity(0.8) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Я должен", "I owe"), style: TextStyle(color: selectedType == 'i_owe' ? Colors.white : sText, fontWeight: FontWeight.bold)))))), 
+                            Expanded(child: GestureDetector(onTap: () => setModalState(()=> selectedType = 'they_owe'), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: selectedType == 'they_owe' ? Colors.green.withOpacity(0.8) : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(t("Мне должны", "They owe me"), style: TextStyle(color: selectedType == 'they_owe' ? Colors.white : sText, fontWeight: FontWeight.bold))))))
+                          ]
+                        )
+                      ),
+                      const SizedBox(height: 16),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Имя (Кто или Кому)", "Name (Who or Whom)"), hintStyle: TextStyle(color: sText)))), 
+                      const SizedBox(height: 16),
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Сумма долга", "Debt Amount"), hintStyle: TextStyle(color: sText)))), 
+                      const SizedBox(height: 16),
+                      GlassCard(onTap: () async { final d = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime.now(), lastDate: DateTime(2030)); if (d != null) setModalState(() => selectedDate = d); }, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t("Дата возврата", "Due Date"), style: TextStyle(color: sText)), Text(formatCustomDate(selectedDate), style: TextStyle(color: pText, fontWeight: FontWeight.bold))])),
+                      const SizedBox(height: 24),
+                      SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameC.text.isNotEmpty && amtC.text.isNotEmpty) { setState(() { myDebts.add(Debt(id: DateTime.now().millisecondsSinceEpoch.toString(), title: nameC.text, totalAmount: int.parse(amtC.text), paidAmount: 0, type: selectedType, dueDate: selectedDate)); }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      const SizedBox(height: 10)
+                    ]
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _payDebt(Debt debt, VoidCallback onPaidSuccess) {
+    TextEditingController amtC = TextEditingController();
+    showModalBottomSheet(
+      context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30), 
+            child: Container(
+              padding: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 24), decoration: BoxDecoration(color: sBg), 
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min, 
+                  children: [
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2))), 
+                    const SizedBox(height: 30), Text(t("Погасить долг", "Pay off debt"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
+                    const SizedBox(height: 8), Text('${debt.title} (${t("Осталось", "Left")}: ${formatMoney(debt.totalAmount - debt.paidAmount)} $appCurrency)', style: TextStyle(color: sText, fontSize: 16)), 
+                    const SizedBox(height: 24), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: sText)))), 
+                    const SizedBox(height: 24), 
+                    SizedBox(
+                      width: double.infinity, height: 56, 
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), 
+                        onPressed: () { 
+                          int val = int.tryParse(amtC.text) ?? 0; 
+                          if (val > 0) { 
+                            setState(() { 
+                              debt.paidAmount += val; 
+                              if (debt.paidAmount > debt.totalAmount) debt.paidAmount = debt.totalAmount; 
+                              debt.history.insert(0, {'date': DateTime.now().toIso8601String(), 'amount': val});
+                            }); 
+                            saveLocalData(); 
+                            onPaidSuccess();
+                            Navigator.pop(c); 
+                          } 
+                        }, 
+                        child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+                      )
+                    ), 
+                    const SizedBox(height: 10)
+                  ]
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  void _showDebtDetails(Debt debt) {
+    showModalBottomSheet(
+      context: context, 
+      backgroundColor: Colors.transparent, 
+      isScrollControlled: true,
+      builder: (c) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            double pct = debt.paidAmount / debt.totalAmount; 
+            if(pct > 1) pct = 1;
+            Color barColor = debt.type == 'i_owe' ? Colors.redAccent : Colors.green;
+            
+            return ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                child: Container(
+                  height: MediaQuery.of(context).size.height * 0.85,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(color: sBg),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: gBorder, borderRadius: BorderRadius.circular(2)))),
+                      const SizedBox(height: 24),
+                      Text(debt.title, style: TextStyle(color: pText, fontSize: 28, fontWeight: FontWeight.bold), maxLines: 2, overflow: TextOverflow.ellipsis),
+                      const SizedBox(height: 8),
+                      Text('${t("Осталось", "Left")}: ${formatMoney(debt.totalAmount - debt.paidAmount)} $appCurrency', style: TextStyle(color: sText, fontSize: 16)),
+                      const SizedBox(height: 24),
+                      
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('${t("Оплачено", "Paid")}: ${formatMoney(debt.paidAmount)} / ${formatMoney(debt.totalAmount)}', style: TextStyle(color: sText, fontSize: 14)), Text('${(pct*100).toInt()}%', style: TextStyle(color: barColor, fontWeight: FontWeight.bold))]), 
+                      const SizedBox(height: 12), 
+                      Stack(children: [Container(height: 12, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(6))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 12, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(6), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
+                      const SizedBox(height: 24),
+
+                      if (debt.paidAmount < debt.totalAmount)
+                        SizedBox(
+                          width: double.infinity, height: 56, 
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: barColor.withOpacity(0.2), elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                            onPressed: () {
+                              _payDebt(debt, () { setModalState((){}); setState((){}); });
+                            },
+                            child: Text(t("Внести платеж", "Make Payment"), style: TextStyle(color: barColor, fontSize: 16, fontWeight: FontWeight.bold))
+                          )
+                        ),
+                      const SizedBox(height: 32),
+                      
+                      Text(t("История платежей", "Payment History"), style: TextStyle(color: pText, fontSize: 20, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 16),
+                      
+                      Expanded(
+                        child: debt.history.isEmpty 
+                          ? Center(child: Text(t("Платежей пока нет", "No payments yet"), style: TextStyle(color: sText)))
+                          : ListView.builder(
+                              itemCount: debt.history.length,
+                              itemBuilder: (ctx, i) {
+                                var h = debt.history[i];
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 12),
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Icon(Icons.check_circle, color: barColor, size: 20),
+                                          const SizedBox(width: 12),
+                                          Text('${t("Дата", "Date")}: ${formatCustomDate(DateTime.parse(h['date']))}', style: TextStyle(color: sText, fontSize: 16)),
+                                        ]
+                                      ),
+                                      Text('+ ${formatMoney(h['amount'])} $appCurrency', style: TextStyle(color: pText, fontSize: 16, fontWeight: FontWeight.bold)),
+                                    ]
+                                  )
+                                );
+                              }
+                            )
+                      )
+                    ]
+                  )
+                )
+              )
+            );
+          }
+        );
+      }
+    );
+  }
+
+  @override Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Scaffold(
+          backgroundColor: Colors.transparent, 
+          appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Долги', 'Debts'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
+          floatingActionButton: FloatingActionButton(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 5, onPressed: _showAddDebtSheet, child: const Icon(Icons.add)), 
+          body: myDebts.isEmpty ? Center(child: Text(t("Нет активных долгов", "No active debts"), style: TextStyle(color: sText))) 
+            : ListView.builder(
+                padding: const EdgeInsets.all(20), itemCount: myDebts.length, 
+                itemBuilder: (context, index) { 
+                  final d = myDebts[index]; 
+                  double pct = d.paidAmount / d.totalAmount; if(pct>1) pct=1;
+                  Color barColor = d.type == 'i_owe' ? Colors.redAccent : Colors.green;
+                  return Dismissible(
+                    key: Key(d.id), direction: DismissDirection.endToStart, 
+                    onDismissed: (_) => _deleteDebt(index), 
+                    background: Container(margin: const EdgeInsets.only(bottom: 12), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), decoration: BoxDecoration(color: Colors.redAccent, borderRadius: BorderRadius.circular(20)), child: const Icon(Icons.delete, color: Colors.white)), 
+                    child: GlassCard(
+                      margin: const EdgeInsets.only(bottom: 16), padding: const EdgeInsets.all(16), 
+                      onTap: () => _showDebtDetails(d), 
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start, 
+                        children: [
+                          Row(
+                            children: [
+                              Icon(d.type == 'i_owe' ? Icons.arrow_upward : Icons.arrow_downward, color: barColor, size: 20), 
+                              const SizedBox(width: 8), 
+                              Expanded(child: Text(d.title, style: TextStyle(color: pText, fontSize: 18, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)), 
+                              const SizedBox(width: 16), 
+                              Text('${(pct*100).toInt()}%', style: TextStyle(color: barColor, fontWeight: FontWeight.bold))
+                            ]
+                          ), 
+                          const SizedBox(height: 12), 
+                          Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
+                          const SizedBox(height: 12), 
+                          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('${t("Оплачено", "Paid")}: ${formatMoney(d.paidAmount)} / ${formatMoney(d.totalAmount)}', style: TextStyle(color: sText, fontSize: 12)), Text('${t("Дата возврата", "Due Date")}: ${formatCustomDate(d.dueDate)}', style: TextStyle(color: sText, fontSize: 12))])
+                        ]
+                      )
+                    )
+                  ); 
+                }
+              )
+        )
+      ]
+    );
+  }
+}
+
