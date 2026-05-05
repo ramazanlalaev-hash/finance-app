@@ -105,7 +105,7 @@ class RecurringTx {
 class Debt { 
   String id; String title; int totalAmount; int paidAmount; String type; DateTime dueDate; 
   List<Map<String, dynamic>> history; 
-  Debt({required this.id, required this.title, required this.totalAmount, required this.paidAmount, required this.type, required this.dueDate, this.history = const []}); 
+  Debt({required this.id, required this.title, required this.totalAmount, required this.paidAmount, required this.type, required this.dueDate, List<Map<String, dynamic>>? history}) : history = history ?? []; 
   Map<String, dynamic> toJson() => {'id': id, 'title': title, 'totalAmount': totalAmount, 'paidAmount': paidAmount, 'type': type, 'dueDate': dueDate.toIso8601String(), 'history': history}; 
   factory Debt.fromJson(Map<String, dynamic> j) => Debt(id: j['id'], title: j['title'], totalAmount: j['totalAmount'], paidAmount: j['paidAmount'], type: j['type'], dueDate: DateTime.parse(j['dueDate']), history: j['history'] != null ? List<Map<String, dynamic>>.from(j['history']) : []); 
 }
@@ -122,7 +122,8 @@ List<BankAccount> myAccounts = [];
 List<BigGoal> myGoals = [];
 List<RecurringTx> myRecurring = [];
 List<Debt> myDebts = [];
-
+List<Map<String, dynamic>> pendingSyncActions = [];
+bool isSyncing = false;
 final List<CategoryItem> defaultCategories = [
   CategoryItem('Супермаркеты', Icons.shopping_cart_outlined, Colors.blue, scope: 'expense'), 
   CategoryItem('Рестораны', Icons.restaurant, Colors.orange, scope: 'expense'), 
@@ -136,7 +137,7 @@ List<CategoryItem> appCategories = defaultCategories.map((c) => CategoryItem(c.n
 final List<Color> availableColors = [Colors.blue, Colors.red, Colors.green, Colors.orange, Colors.purple, Colors.pink, Colors.teal, Colors.cyan, Colors.amber, Colors.indigo, Colors.brown, Colors.grey];
 final List<IconData> availableIcons = [Icons.shopping_cart_outlined, Icons.restaurant, Icons.local_taxi, Icons.subscriptions_outlined, Icons.trending_up, Icons.sell_outlined, Icons.home_outlined, Icons.flight, Icons.pets, Icons.fitness_center, Icons.school_outlined, Icons.local_hospital_outlined, Icons.movie_outlined, Icons.sports_esports, Icons.checkroom, Icons.account_balance_wallet_outlined, Icons.laptop_mac, Icons.phone_iphone, Icons.coffee, Icons.attach_money, Icons.directions_car, Icons.house, Icons.payment];
 final List<String> premiumWallpapers = [
-  'https://images.unsplash.com/photo-1614850523459-c2f4c699c52e?q=80&w=1080', 'black_solid', 'white_solid', 
+  'https://images.unsplash.com/photo-1614850523459-c2f4c699c52e?q=80&w=1080', 'black_solid', 'white_solid', 'pure_black', 'pure_white',
   'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?q=80&w=1080', 'https://images.unsplash.com/photo-1511512578047-dfb367046420?q=80&w=1080', 
   'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1080', 'https://images.unsplash.com/photo-1557672172-298e090bd0f1?q=80&w=1080', 
   'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?q=80&w=1080', 'https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?q=80&w=1080', 
@@ -148,12 +149,13 @@ final List<String> premiumWallpapers = [
 ];
 
 final Map<String, Color> wallpaperAccents = { 
-  premiumWallpapers[0]: const Color(0xFF00FFA3), 'black_solid': const Color(0xFF00FFA3), 'white_solid': Colors.black, 
-  premiumWallpapers[3]: const Color(0xFF00E5FF), premiumWallpapers[4]: const Color(0xFFFF3366), premiumWallpapers[5]: const Color(0xFFFFD700), 
-  premiumWallpapers[6]: const Color(0xFFFF5E00), premiumWallpapers[7]: const Color(0xFFE040FB), premiumWallpapers[8]: const Color(0xFF00E676), 
-  premiumWallpapers[9]: const Color(0xFFFF1744), premiumWallpapers[10]: const Color(0xFF00B0FF), premiumWallpapers[11]: const Color(0xFFFF9100), 
-  premiumWallpapers[12]: const Color(0xFF1DE9B6), premiumWallpapers[13]: const Color(0xFF651FFF), premiumWallpapers[14]: const Color(0xFFF50057), 
-  premiumWallpapers[15]: const Color(0xFF00E5FF), premiumWallpapers[16]: const Color(0xFFE040FB), premiumWallpapers[17]: const Color(0xFF00FFA3) 
+  premiumWallpapers[0]: const Color(0xFF00FFA3), 'black_solid': const Color(0xFF00FFA3), 'white_solid': Colors.black,
+  'pure_black': Colors.white, 'pure_white': const Color(0xFF1A1A1A),
+  premiumWallpapers[5]: const Color(0xFF00E5FF), premiumWallpapers[6]: const Color(0xFFFF3366), premiumWallpapers[7]: const Color(0xFFFFD700), 
+  premiumWallpapers[8]: const Color(0xFFFF5E00), premiumWallpapers[9]: const Color(0xFFE040FB), premiumWallpapers[10]: const Color(0xFF00E676), 
+  premiumWallpapers[11]: const Color(0xFFFF1744), premiumWallpapers[12]: const Color(0xFF00B0FF), premiumWallpapers[13]: const Color(0xFFFF9100), 
+  premiumWallpapers[14]: const Color(0xFF1DE9B6), premiumWallpapers[15]: const Color(0xFF651FFF), premiumWallpapers[16]: const Color(0xFFF50057), 
+  premiumWallpapers[17]: const Color(0xFF00E5FF), premiumWallpapers[18]: const Color(0xFFE040FB), premiumWallpapers[19]: const Color(0xFF00FFA3) 
 };
 
 // === ЛОКАЛЬНОЕ ХРАНИЛИЩЕ ===
@@ -181,6 +183,55 @@ Future<void> saveLocalData() async {
   await prefs.setString('my_debts', jsonEncode(myDebts.map((d) => d.toJson()).toList())); 
   await prefs.setBool('use_single_account', useSingleAccount);
 }
+
+Future<void> queueSyncAction(Map<String, dynamic> action) async {
+  pendingSyncActions.add(action);
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('pending_sync', jsonEncode(pendingSyncActions));
+  syncPendingQueue();
+}
+
+Future<void> loadPendingSync() async {
+  final prefs = await SharedPreferences.getInstance();
+  final String? saved = prefs.getString('pending_sync');
+  if (saved != null && saved.isNotEmpty) {
+    try {
+      List<dynamic> decoded = jsonDecode(saved);
+      pendingSyncActions = decoded.cast<Map<String, dynamic>>();
+    } catch (e) {
+      pendingSyncActions = [];
+    }
+  }
+}
+
+Future<void> syncPendingQueue() async {
+  if (isSyncing || pendingSyncActions.isEmpty) return;
+  isSyncing = true;
+  
+  final prefs = await SharedPreferences.getInstance();
+  List<Map<String, dynamic>> remaining = List.from(pendingSyncActions);
+  
+  for (var action in pendingSyncActions) {
+    try {
+      if (action['operation'] == 'insert') {
+        await Supabase.instance.client.from('transactions').insert(action['data']);
+      } else if (action['operation'] == 'delete') {
+        await Supabase.instance.client.from('transactions').delete().eq('id', action['id']);
+      } else if (action['operation'] == 'update') {
+        await Supabase.instance.client.from('transactions').update(action['data']).eq('id', action['id']);
+      }
+      remaining.remove(action);
+      await prefs.setString('pending_sync', jsonEncode(remaining));
+    } catch (e) {
+      print('Sync error, will retry later: $e');
+      break; 
+    }
+  }
+  
+  pendingSyncActions = remaining;
+  isSyncing = false;
+}
+
 
 Future<void> loadLocalData() async { 
   myDeviceId = await secureStorage.read(key: 'device_id') ?? '';
@@ -356,6 +407,8 @@ class _RootScreenState extends State<RootScreen> {
     }
     await loadCategoriesFromPrefs(); 
     await loadLocalData(); 
+    await loadPendingSync();
+    syncPendingQueue();
     await _loadSettings(); 
     await _updateStreak(); 
     await _loadCachedTransactions(); 
@@ -395,6 +448,12 @@ class _RootScreenState extends State<RootScreen> {
     } 
   }
   
+  void _localRebuild() async {
+    setState(() {}); 
+    final prefs = await SharedPreferences.getInstance(); 
+    await prefs.setString('cached_tx', jsonEncode(allTransactions.map((t) => t.toJson()).toList()));
+  }
+
   void _forceRebuild() { setState(() {}); _fetchTransactions(); }
 
   Future<void> _updateStreak() async {
@@ -416,7 +475,7 @@ class _RootScreenState extends State<RootScreen> {
     final url = prefs.getString('wallpaper'); 
     globalIsBgBlurred = prefs.getBool('bg_blur') ?? false; 
     setState(() { 
-      currentBg = url; globalIsLightMode = url == 'white_solid'; 
+      currentBg = url; globalIsLightMode = url == 'white_solid' || url == 'pure_white'; 
       appAccentColor = url != null ? (wallpaperAccents[url] ?? const Color(0xFF00FFA3)) : const Color(0xFF00FFA3); 
     }); 
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(statusBarColor: Colors.transparent, statusBarIconBrightness: globalIsLightMode ? Brightness.dark : Brightness.light, systemNavigationBarIconBrightness: globalIsLightMode ? Brightness.dark : Brightness.light)); 
@@ -445,6 +504,32 @@ class _RootScreenState extends State<RootScreen> {
         
         fetchedTx.add(Transaction(id: row['id'], title: row['title'], note: row['note'] ?? '', amount: amount, type: type, category: catName, icon: txIcon, iconColor: txColor, date: row['created_at'] != null ? DateTime.parse(row['created_at']) : DateTime.now()));
       }
+      for (var action in pendingSyncActions) {
+        if (action['operation'] == 'delete') {
+          fetchedTx.removeWhere((t) => t.id == action['id']);
+        } else if (action['operation'] == 'update') {
+          final idx = fetchedTx.indexWhere((t) => t.id == action['id']);
+          if (idx != -1) {
+            final old = fetchedTx[idx];
+            final d = action['data'];
+            fetchedTx[idx] = Transaction(id: old.id, title: old.title, note: d['note'] ?? old.note, amount: old.amount, type: d['type'] ?? old.type, category: old.category, icon: old.icon, iconColor: old.iconColor, date: old.date);
+          }
+        } else if (action['operation'] == 'insert') {
+          final d = action['data'];
+          if (!fetchedTx.any((t) => t.id == d['id'])) {
+            final type = d['type'] ?? 'expense';
+            final catName = d['category'] ?? 'Разное';
+            final catObj = appCategories.firstWhere((c) => c.name == catName, orElse: () => CategoryItem(catName, Icons.category, Colors.grey));
+            IconData txIcon = catObj.icon; Color txColor = catObj.color;
+            if (type == 'income' || type == 'asset_sale') { txIcon = Icons.arrow_downward; txColor = globalIsLightMode ? Colors.blueAccent : Colors.blue; }
+            if (type == 'asset' || type == 'asset_owned' || type == 'sold_asset') { txIcon = Icons.diamond_outlined; txColor = globalIsLightMode ? Colors.orange : Colors.amber; }
+            if (type == 'transfer') { txIcon = Icons.swap_horiz; txColor = Colors.purpleAccent; }
+            fetchedTx.add(Transaction(id: d['id'], title: d['title'], note: d['note'] ?? '', amount: d['amount'], type: type, category: catName, icon: txIcon, iconColor: txColor, date: d['created_at'] != null ? DateTime.parse(d['created_at']) : DateTime.now()));
+          }
+        }
+      }
+      fetchedTx.sort((a, b) => b.date.compareTo(a.date));
+
       final prefs = await SharedPreferences.getInstance(); 
       await prefs.setString('cached_tx', jsonEncode(fetchedTx.map((t) => t.toJson()).toList()));
       if (mounted) setState(() { allTransactions = fetchedTx; totalBalance = myAccounts.fold(0, (sum, acc) => sum + acc.balance); isLoading = false; });
@@ -459,7 +544,13 @@ class _RootScreenState extends State<RootScreen> {
 
   @override 
   Widget build(BuildContext context) {
-    Widget bgLayer = currentBg == 'white_solid' ? Container(color: Colors.white) : (currentBg == 'black_solid' ? Container(color: Colors.black) : (currentBg != null ? Stack(fit: StackFit.expand, children: [Image.network(currentBg!, fit: BoxFit.cover, errorBuilder: (c, e, s) => Container(color: const Color(0xFF0F0F13))), Container(color: Colors.black.withOpacity(globalIsBgBlurred ? 0.0 : 0.4))]) : Container(color: const Color(0xFF0F0F13))));
+    bool isSolidBg(String? bg) => bg == 'white_solid' || bg == 'black_solid' || bg == 'pure_black' || bg == 'pure_white';
+    Color solidBgColor(String? bg) {
+      if (bg == 'pure_white' || bg == 'white_solid') return bg == 'pure_white' ? const Color(0xFFFFFFFF) : Colors.white;
+      if (bg == 'pure_black') return const Color(0xFF000000);
+      return Colors.black;
+    }
+    Widget bgLayer = isSolidBg(currentBg) ? Container(color: solidBgColor(currentBg)) : (currentBg != null ? Stack(fit: StackFit.expand, children: [Image.network(currentBg!, fit: BoxFit.cover, errorBuilder: (c, e, s) => Container(color: const Color(0xFF0F0F13))), Container(color: Colors.black.withOpacity(globalIsBgBlurred ? 0.0 : 0.4))]) : Container(color: const Color(0xFF0F0F13)));
 
     if (isLocked) {
       return Stack(
@@ -504,7 +595,7 @@ class _RootScreenState extends State<RootScreen> {
     }).toList();
     
     final screens = [ 
-      DashboardScreen(allTransactions: allTransactions, filteredTransactions: filteredTx, balance: totalBalance, isLoading: isLoading, onRefresh: _forceRebuild, streak: streakCount, level: userLevel, selectedDateRange: selectedDateRange, onDateRangeChanged: _onDateRangeChanged), 
+      DashboardScreen(allTransactions: allTransactions, filteredTransactions: filteredTx, balance: totalBalance, isLoading: isLoading, onRefresh: _forceRebuild, onLocalUpdate: _localRebuild, streak: streakCount, level: userLevel, selectedDateRange: selectedDateRange, onDateRangeChanged: _onDateRangeChanged), 
       AnalyticsScreen(allTransactions: allTransactions, transactions: filteredTx, selectedDateRange: selectedDateRange, onDateRangeChanged: _onDateRangeChanged), 
       PlanScreen(allTransactions: allTransactions, totalBalance: totalBalance), 
       ProfileScreen(currentBg: currentBg, onBgChanged: _changeWallpaper, streak: streakCount, level: userLevel, onSettingsUpdated: _loadSettings, onRefresh: _forceRebuild) 
@@ -513,8 +604,8 @@ class _RootScreenState extends State<RootScreen> {
     return Stack(
       children: [ 
         bgLayer, 
-        if (globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        if (globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid' && currentBg != 'pure_black' && currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid' && currentBg != 'pure_black' && currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, extendBody: true, body: screens[_currentIndex], 
           bottomNavigationBar: ClipRRect(
@@ -547,18 +638,48 @@ class DashboardScreen extends StatelessWidget {
   final int balance; 
   final bool isLoading; 
   final VoidCallback onRefresh; 
+  final VoidCallback onLocalUpdate;
   final int streak; 
   final String level; 
   final DateTimeRange selectedDateRange; 
   final Function(DateTimeRange) onDateRangeChanged;
   
-  const DashboardScreen({super.key, required this.allTransactions, required this.filteredTransactions, required this.balance, required this.isLoading, required this.onRefresh, required this.streak, required this.level, required this.selectedDateRange, required this.onDateRangeChanged});
+  const DashboardScreen({super.key, required this.allTransactions, required this.filteredTransactions, required this.balance, required this.isLoading, required this.onRefresh, required this.onLocalUpdate, required this.streak, required this.level, required this.selectedDateRange, required this.onDateRangeChanged});
 
-  void _fastExecute(BuildContext context, VoidCallback localAction, Future<void> Function() networkAction) { 
+  String _generateUuid() {
+    final random = Random();
+    String hexDigits = "0123456789abcdef";
+    String generateHex(int length) => List.generate(length, (index) => hexDigits[random.nextInt(16)]).join();
+    return "${generateHex(8)}-${generateHex(4)}-4${generateHex(3)}-a${generateHex(3)}-${generateHex(12)}";
+  }
+
+  Transaction _createLocalTx(String title, String note, int amount, String type, String category) {
+    final catObj = appCategories.firstWhere((c) => c.name == category, orElse: () => CategoryItem(category, Icons.category, Colors.grey));
+    IconData txIcon = catObj.icon; Color txColor = catObj.color;
+    if (type == 'income' || type == 'asset_sale') { txIcon = Icons.arrow_downward; txColor = globalIsLightMode ? Colors.blueAccent : Colors.blue; }
+    if (type == 'asset' || type == 'asset_owned' || type == 'sold_asset') { txIcon = Icons.diamond_outlined; txColor = globalIsLightMode ? Colors.orange : Colors.amber; }
+    if (type == 'transfer') { txIcon = Icons.swap_horiz; txColor = Colors.purpleAccent; }
+    return Transaction(
+      id: _generateUuid(),
+      title: title, note: note, amount: amount, type: type, category: category,
+      icon: txIcon, iconColor: txColor, date: DateTime.now()
+    );
+  }
+
+  void _fastExecute(BuildContext context, {required VoidCallback localAction, List<Transaction>? newTransactions, List<Map<String, dynamic>>? syncActions}) { 
     localAction(); 
+    if (newTransactions != null) {
+      for (var tx in newTransactions) {
+        allTransactions.insert(0, tx);
+      }
+    }
     saveLocalData(); 
-    onRefresh(); 
-    networkAction().catchError((e) { print('Network error (saved offline): $e'); }); 
+    onLocalUpdate();
+    if (syncActions != null) {
+      for (var action in syncActions) {
+        queueSyncAction(action);
+      }
+    }
   }
 
   Future<void> _showAddTransactionSheet(BuildContext context) async {
@@ -573,22 +694,31 @@ class DashboardScreen extends StatelessWidget {
     );
     
     if (result != null && result['amount'] > 0) {
+      final title = result['title'];
+      final type = result['type'];
+      final amount = result['amount'];
+      final note = result['note'];
+      final category = result['category'];
+
+      final newTx = _createLocalTx(title, note, amount, type, category);
+
       _fastExecute(context, 
-        () {
+        localAction: () {
           var acc = myAccounts.firstWhere((a) => a.id == result['accountId']);
-          if (result['type'] == 'expense' || result['type'] == 'asset') acc.balance -= result['amount'] as int;
-          else if (result['type'] == 'income') acc.balance += result['amount'] as int;
+          if (type == 'expense' || type == 'asset') acc.balance -= amount as int;
+          else if (type == 'income') acc.balance += amount as int;
         }, 
-        () async {
-          await Supabase.instance.client.from('transactions').insert({
+        newTransactions: [newTx],
+        syncActions: [{'operation': 'insert', 'data': {
+            'id': newTx.id,
             'user_id': myDeviceId, 
-            'title': result['title'], 
-            'note': result['note'], 
-            'amount': result['amount'], 
-            'type': result['type'], 
-            'category': result['category']
-          });
-        }
+            'title': title, 
+            'note': note, 
+            'amount': amount, 
+            'type': type, 
+            'category': category,
+            'created_at': newTx.date.toIso8601String()
+        }}]
       );
     }
   }
@@ -605,25 +735,29 @@ class DashboardScreen extends StatelessWidget {
     );
     
     if (result != null && result['amount'] > 0) {
+      final amount = result['amount'] as int;
+      var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
+      var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
+      final title = '${t("Перевод", "Transfer")}: ${fromAcc.name} ➔ ${toAcc.name}';
+      
+      final newTx = _createLocalTx(title, '', amount, 'transfer', 'Разное');
+
       _fastExecute(context, 
-        () {
-          var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
-          var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
-          fromAcc.balance -= result['amount'] as int; 
-          toAcc.balance += result['amount'] as int;
+        localAction: () {
+          fromAcc.balance -= amount; 
+          toAcc.balance += amount;
         }, 
-        () async {
-          var fromAcc = myAccounts.firstWhere((a) => a.id == result['fromAcc']);
-          var toAcc = myAccounts.firstWhere((a) => a.id == result['toAcc']);
-          await Supabase.instance.client.from('transactions').insert({
+        newTransactions: [newTx],
+        syncActions: [{'operation': 'insert', 'data': {
+            'id': newTx.id,
             'user_id': myDeviceId, 
-            'title': '${t("Перевод", "Transfer")}: ${fromAcc.name} ➔ ${toAcc.name}', 
+            'title': title, 
             'note': '', 
-            'amount': result['amount'], 
+            'amount': amount, 
             'type': 'transfer', 
-            'category': 'Разное'
-          });
-        }
+            'category': 'Разное',
+            'created_at': newTx.date.toIso8601String()
+        }}]
       );
     }
   }
@@ -701,13 +835,13 @@ class DashboardScreen extends StatelessWidget {
                 if (!isSold) 
                   Row(
                     children: [
-                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () async { await Supabase.instance.client.from('transactions').delete().eq('id', buyTx.id); Navigator.pop(c); onRefresh(); }, child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold)))), 
+                      Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () { _fastExecute(context, localAction: () { allTransactions.removeWhere((t) => t.id == buyTx.id); }, syncActions: [{'operation': 'delete', 'id': buyTx.id}]); Navigator.pop(c); }, child: Text(t("Удалить", "Delete"), style: const TextStyle(color: Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold)))), 
                       const SizedBox(width: 12), 
                       Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: Colors.black, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { Navigator.pop(c); _sellAsset(context, buyTx); }, child: Text(t("Продать", "Sell"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
                     ]
                   ) 
                 else 
-                  SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () async { await Supabase.instance.client.from('transactions').delete().eq('id', buyTx.id); if (sellTx.id != buyTx.id) await Supabase.instance.client.from('transactions').delete().eq('id', sellTx.id); Navigator.pop(c); onRefresh(); }, child: Text(t("Стереть из истории", "Erase History"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                  SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: Colors.redAccent, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () { _fastExecute(context, localAction: () { allTransactions.removeWhere((t) => t.id == buyTx.id || t.id == sellTx.id); }, syncActions: [{'operation': 'delete', 'id': buyTx.id}, if (sellTx.id != buyTx.id) {'operation': 'delete', 'id': sellTx.id}]); Navigator.pop(c); }, child: Text(t("Стереть из истории", "Erase History"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
               ]
             )
           )
@@ -739,7 +873,7 @@ class DashboardScreen extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text('${t("Куплено за", "Bought for")}: ${formatMoney(asset.amount)} $appCurrency', style: TextStyle(color: sText, fontSize: 14)), 
                   const SizedBox(height: 24),
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: ctrl, keyboardType: TextInputType.number, enableInteractiveSelection: false, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                   const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity, height: 56, 
@@ -748,10 +882,23 @@ class DashboardScreen extends StatelessWidget {
                       onPressed: () { 
                         int sell = int.tryParse(ctrl.text) ?? 0; 
                         if (sell > 0) { 
-                          _fastExecute(context, () { }, () async {
-                            await Supabase.instance.client.from('transactions').update({'type': 'sold_asset'}).eq('id', asset.id); 
-                            await Supabase.instance.client.from('transactions').insert({'user_id': myDeviceId, 'title': 'Продажа: ${asset.title}', 'amount': sell, 'type': 'asset_sale', 'category': 'Инвестиции'}); 
-                          });
+                          final newTx = _createLocalTx('Продажа: ${asset.title}', '', sell, 'asset_sale', 'Инвестиции');
+                          _fastExecute(context, 
+                            localAction: () {
+                              final idx = allTransactions.indexWhere((t) => t.id == asset.id);
+                              if (idx != -1) {
+                                final old = allTransactions[idx];
+                                allTransactions[idx] = Transaction(id: old.id, title: old.title, note: old.note, amount: old.amount, type: 'sold_asset', category: old.category, icon: old.icon, iconColor: old.iconColor, date: old.date);
+                              }
+                            },
+                            newTransactions: [newTx],
+                            syncActions: [
+                              {'operation': 'update', 'id': asset.id, 'data': {'type': 'sold_asset'}},
+                              {'operation': 'insert', 'data': {
+                                'id': newTx.id, 'user_id': myDeviceId, 'title': newTx.title, 'note': '', 'amount': sell, 'type': 'asset_sale', 'category': 'Инвестиции', 'created_at': newTx.date.toIso8601String()
+                              }}
+                            ]
+                          );
                           Navigator.pop(c); 
                         } 
                       }, 
@@ -769,7 +916,6 @@ class DashboardScreen extends StatelessWidget {
 
   Future<void> _showEditTransactionSheet(BuildContext context, Transaction tx) async {
     TextEditingController noteCtrl = TextEditingController(text: tx.note); 
-    bool isSaving = false;
     
     await showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
@@ -798,9 +944,9 @@ class DashboardScreen extends StatelessWidget {
                     const SizedBox(height: 24),
                     Row(
                       children: [
-                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: Colors.redAccent, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: isSaving ? null : () async { setState(() => isSaving = true); try { await Supabase.instance.client.from('transactions').delete().eq('id', tx.id); Navigator.pop(sheetContext); onRefresh(); } catch(e) { setState(() => isSaving = false); ScaffoldMessenger.of(sheetContext).showSnackBar(const SnackBar(content: Text('⚠️ Ошибка сети.'), backgroundColor: Colors.redAccent)); } }, child: isSaving ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent)) : Text(t("Удалить", "Delete"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: globalIsLightMode ? Colors.white : Colors.white.withOpacity(0.1), foregroundColor: Colors.redAccent, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: globalIsLightMode ? Colors.redAccent.withOpacity(0.5) : Colors.transparent))), onPressed: () { _fastExecute(context, localAction: () { allTransactions.removeWhere((t) => t.id == tx.id); }, syncActions: [{'operation': 'delete', 'id': tx.id}]); Navigator.pop(sheetContext); }, child: Text(t("Удалить", "Delete"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
                         const SizedBox(width: 12),
-                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: isSaving ? null : () async { setState(() => isSaving = true); try { await Supabase.instance.client.from('transactions').update({'note': noteCtrl.text.trim()}).eq('id', tx.id); Navigator.pop(sheetContext); onRefresh(); } catch(e) { setState(() => isSaving = false); ScaffoldMessenger.of(sheetContext).showSnackBar(const SnackBar(content: Text('⚠️ Ошибка сети.'), backgroundColor: Colors.redAccent)); } }, child: isSaving ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: accentTextColor)) : Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
+                        Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { _fastExecute(context, localAction: () { final idx = allTransactions.indexWhere((t) => t.id == tx.id); if (idx != -1) { final old = allTransactions[idx]; allTransactions[idx] = Transaction(id: old.id, title: old.title, note: noteCtrl.text.trim(), amount: old.amount, type: old.type, category: old.category, icon: old.icon, iconColor: old.iconColor, date: old.date); } }, syncActions: [{'operation': 'update', 'id': tx.id, 'data': {'note': noteCtrl.text.trim()}}]); Navigator.pop(sheetContext); }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))
                       ]
                     ), 
                     const SizedBox(height: 40)
@@ -1666,7 +1812,7 @@ class _PlanScreenState extends State<PlanScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: StatefulBuilder(
           builder: (context, setModalState) => ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
@@ -1689,7 +1835,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         )
                       ), 
                       const SizedBox(height: 24), 
-                      Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, enableInteractiveSelection: false, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                       const SizedBox(height: 24), 
                       Row(
                         children: [
@@ -1717,7 +1863,7 @@ class _PlanScreenState extends State<PlanScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: StatefulBuilder(
           builder: (context, setModalState) => ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
@@ -1734,7 +1880,7 @@ class _PlanScreenState extends State<PlanScreen> {
                       const SizedBox(height: 24), 
                       Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Название (Например: Машина)", "Name (e.g. Car)"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                       const SizedBox(height: 16), 
-                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: targetC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Целевая сумма", "Target Amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: targetC, keyboardType: TextInputType.number, enableInteractiveSelection: false, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Целевая сумма", "Target Amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                       const SizedBox(height: 24), 
                       Row(
                         children: [
@@ -1760,7 +1906,7 @@ class _PlanScreenState extends State<PlanScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
           child: BackdropFilter(
@@ -1775,7 +1921,7 @@ class _PlanScreenState extends State<PlanScreen> {
                     const SizedBox(height: 30), Text(t("Пополнить копилку", "Add to Savings"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
                     const SizedBox(height: 8), Text(goal.name, style: TextStyle(color: sText, fontSize: 16)), 
                     const SizedBox(height: 24), 
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, enableInteractiveSelection: false, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                     const SizedBox(height: 24), 
                     Row(
                       children: [
@@ -1800,7 +1946,7 @@ class _PlanScreenState extends State<PlanScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
           child: BackdropFilter(
@@ -1816,7 +1962,7 @@ class _PlanScreenState extends State<PlanScreen> {
                     const SizedBox(height: 24), 
                     Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: titleC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Например: Без фастфуда", "e.g. No fastfood"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                     const SizedBox(height: 16), 
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Экономия за 1 раз", "Save amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, enableInteractiveSelection: false, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Экономия за 1 раз", "Save amount"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30)))), 
                     const SizedBox(height: 24), 
                     Row(
                       children: [
@@ -1891,7 +2037,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
                           children: [
-                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(g.icon, color: appAccentColor, size: 20), const SizedBox(width: 8), Expanded(child: Text(g.name, style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))]), Text('${(pct*100).toInt()}%', style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold))]), 
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Row(children: [Icon(g.icon, color: appAccentColor, size: 20), const SizedBox(width: 8), Expanded(child: Text(g.name, style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))])), const SizedBox(width: 8), Text('${(pct*100).toInt()}%', style: TextStyle(color: appAccentColor, fontWeight: FontWeight.bold))]), 
                             const SizedBox(height: 16), 
                             Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: appAccentColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: appAccentColor.withOpacity(0.5), blurRadius: 8)])))]), 
                             const SizedBox(height: 12), 
@@ -1929,7 +2075,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, 
                           children: [
-                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Icon(catObj.icon, color: catObj.color, size: 16), const SizedBox(width: 8), Expanded(child: Text(t(b.category, b.category), style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))]), Text('${formatMoney(b.spent)} / ${formatMoney(b.limit)}', style: TextStyle(color: sText, fontSize: 12))]), 
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Row(children: [Icon(catObj.icon, color: catObj.color, size: 16), const SizedBox(width: 8), Expanded(child: Text(t(b.category, b.category), style: TextStyle(color: pText, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))])), const SizedBox(width: 8), Text('${formatMoney(b.spent)} / ${formatMoney(b.limit)}', style: TextStyle(color: sText, fontSize: 12))]), 
                             const SizedBox(height: 16), 
                             Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * percent, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
                             const SizedBox(height: 12), 
@@ -2188,7 +2334,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Stack(
                     alignment: Alignment.center, 
                     children: [
-                      Container(margin: const EdgeInsets.only(right: 12), width: 60, decoration: BoxDecoration(color: url == 'white_solid' ? Colors.white : (url == 'black_solid' ? Colors.black : null), shape: BoxShape.circle, border: Border.all(color: widget.currentBg == url ? appAccentColor : (globalIsLightMode ? Colors.black12 : Colors.white24), width: 2), image: (url != 'white_solid' && url != 'black_solid') ? DecorationImage(image: NetworkImage(url), fit: BoxFit.cover) : null)), 
+                      Container(margin: const EdgeInsets.only(right: 12), width: 60, decoration: BoxDecoration(color: url == 'white_solid' ? Colors.white : (url == 'pure_white' ? const Color(0xFFFFFFFF) : (url == 'black_solid' ? Colors.black : (url == 'pure_black' ? const Color(0xFF000000) : null))), shape: BoxShape.circle, border: Border.all(color: widget.currentBg == url ? appAccentColor : (globalIsLightMode ? Colors.black12 : Colors.white24), width: 2), image: (url != 'white_solid' && url != 'black_solid' && url != 'pure_black' && url != 'pure_white') ? DecorationImage(image: NetworkImage(url), fit: BoxFit.cover) : null)), 
                       if(isLocked) Container(margin: const EdgeInsets.only(right: 12), width: 60, height: 60, decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), shape: BoxShape.circle), child: Icon(Icons.lock, color: appAccentColor, size: 20))
                     ]
                   )
@@ -2275,10 +2421,10 @@ class _LocalizationScreenState extends State<LocalizationScreen> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
-        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
-        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Container(color: globalIsLightMode ? Colors.white : ((widget.currentBg == 'black_solid' || widget.currentBg == 'pure_black') ? const Color(0xFF000000) : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Язык и Валюта', 'Language & Currency'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
@@ -2321,10 +2467,10 @@ class DoubleTapSetupScreen extends StatelessWidget {
   @override Widget build(BuildContext context) {
     return Stack(
       children: [
-        Container(color: globalIsLightMode ? Colors.white : (currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
-        if (currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: Image.network(currentBg!, fit: BoxFit.cover)), 
-        if (globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Container(color: globalIsLightMode ? Colors.white : ((currentBg == 'black_solid' || currentBg == 'pure_black') ? const Color(0xFF000000) : const Color(0xFF0F0F13))), 
+        if (currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid' && currentBg != 'pure_black' && currentBg != 'pure_white') Positioned.fill(child: Image.network(currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid' && currentBg != 'pure_black' && currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && currentBg != null && currentBg != 'white_solid' && currentBg != 'black_solid' && currentBg != 'pure_black' && currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Быстрое добавление', 'Quick Add Setup'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
@@ -2368,7 +2514,7 @@ class _RecurringManagerScreenState extends State<RecurringManagerScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: StatefulBuilder(
           builder: (context, setModalState) => ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
@@ -2395,9 +2541,9 @@ class _RecurringManagerScreenState extends State<RecurringManagerScreen> {
                       const SizedBox(height: 16),
                       Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: titleC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Название (Netflix)", "Title (e.g. Netflix)"), hintStyle: TextStyle(color: sText)))), 
                       const SizedBox(height: 16),
-                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Сумма", "Amount"), hintStyle: TextStyle(color: sText)))), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, enableInteractiveSelection: false, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Сумма", "Amount"), hintStyle: TextStyle(color: sText)))), 
                       const SizedBox(height: 16),
-                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: dayC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("День месяца (1-31)", "Day of month (1-31)"), hintStyle: TextStyle(color: sText)))), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: dayC, keyboardType: TextInputType.number, enableInteractiveSelection: false, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("День месяца (1-31)", "Day of month (1-31)"), hintStyle: TextStyle(color: sText)))), 
                       const SizedBox(height: 24),
                       SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appAccentColor, foregroundColor: accentTextColor, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(titleC.text.isNotEmpty && amtC.text.isNotEmpty && dayC.text.isNotEmpty) { setState(() { myRecurring.add(RecurringTx(id: DateTime.now().millisecondsSinceEpoch.toString(), title: titleC.text, amount: int.parse(amtC.text), type: selectedType, category: selectedCat, accountId: selectedAcc, dayOfMonth: int.parse(dayC.text))); }); saveLocalData(); Navigator.pop(c); } }, child: Text(t("Сохранить", "Save"), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))), 
                       const SizedBox(height: 10)
@@ -2415,10 +2561,10 @@ class _RecurringManagerScreenState extends State<RecurringManagerScreen> {
   @override Widget build(BuildContext context) {
     return Stack(
       children: [
-        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
-        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
-        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Container(color: globalIsLightMode ? Colors.white : ((widget.currentBg == 'black_solid' || widget.currentBg == 'pure_black') ? const Color(0xFF000000) : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Повторяющиеся платежи', 'Recurring Payments'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
@@ -2465,7 +2611,7 @@ class _AccountsManagerScreenState extends State<AccountsManagerScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: StatefulBuilder(
           builder: (context, setModalState) => ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
@@ -2484,7 +2630,7 @@ class _AccountsManagerScreenState extends State<AccountsManagerScreen> {
                       const SizedBox(height: 24),
                       Row(children: [Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: selColor.withOpacity(0.2), borderRadius: BorderRadius.circular(16)), child: Icon(selIcon, color: selColor, size: 32)), const SizedBox(width: 16), Expanded(child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold), decoration: InputDecoration(hintText: t("Название", "Name"), hintStyle: TextStyle(color: globalIsLightMode ? Colors.black26 : Colors.white30), border: InputBorder.none)))]), 
                       const SizedBox(height: 16),
-                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: balC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Начальный баланс", "Initial Balance"), hintStyle: TextStyle(color: sText)))), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: balC, keyboardType: TextInputType.number, enableInteractiveSelection: false, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Начальный баланс", "Initial Balance"), hintStyle: TextStyle(color: sText)))), 
                       const SizedBox(height: 24),
                       Text(t("ВЫБЕРИ ЦВЕТ", "CHOOSE COLOR"), style: TextStyle(color: sText, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)), 
                       const SizedBox(height: 12),
@@ -2575,10 +2721,10 @@ class _AccountsManagerScreenState extends State<AccountsManagerScreen> {
   @override Widget build(BuildContext context) {
     return Stack(
       children: [
-        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
-        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
-        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Container(color: globalIsLightMode ? Colors.white : ((widget.currentBg == 'black_solid' || widget.currentBg == 'pure_black') ? const Color(0xFF000000) : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Мои счета', 'My Accounts'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
@@ -2633,10 +2779,10 @@ class _CategoryManagerScreenState extends State<CategoryManagerScreen> {
   @override Widget build(BuildContext context) {
     return Stack(
       children: [
-        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
-        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
-        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Container(color: globalIsLightMode ? Colors.white : ((widget.currentBg == 'black_solid' || widget.currentBg == 'pure_black') ? const Color(0xFF000000) : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Категории', 'Categories'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
@@ -2723,7 +2869,7 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: StatefulBuilder(
           builder: (context, setModalState) => ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
@@ -2750,7 +2896,7 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
                       const SizedBox(height: 16),
                       Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: nameC, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Имя (Кто или Кому)", "Name (Who or Whom)"), hintStyle: TextStyle(color: sText)))), 
                       const SizedBox(height: 16),
-                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Сумма долга", "Debt Amount"), hintStyle: TextStyle(color: sText)))), 
+                      Container(padding: const EdgeInsets.symmetric(horizontal: 16), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16)), child: TextField(controller: amtC, keyboardType: TextInputType.number, enableInteractiveSelection: false, style: TextStyle(color: pText, fontSize: 18), decoration: InputDecoration(border: InputBorder.none, hintText: t("Сумма долга", "Debt Amount"), hintStyle: TextStyle(color: sText)))), 
                       const SizedBox(height: 16),
                       GlassCard(onTap: () async { final d = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime.now(), lastDate: DateTime(2030)); if (d != null) setModalState(() => selectedDate = d); }, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(t("Дата возврата", "Due Date"), style: TextStyle(color: sText)), Text(formatCustomDate(selectedDate), style: TextStyle(color: pText, fontWeight: FontWeight.bold))])),
                       const SizedBox(height: 24),
@@ -2772,7 +2918,7 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
     showModalBottomSheet(
       context: context, backgroundColor: Colors.transparent, isScrollControlled: true, 
       builder: (c) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
         child: ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(30)), 
           child: BackdropFilter(
@@ -2787,7 +2933,7 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
                     const SizedBox(height: 30), Text(t("Погасить долг", "Pay off debt"), style: TextStyle(color: pText, fontSize: 24, fontWeight: FontWeight.bold)), 
                     const SizedBox(height: 8), Text('${debt.title} (${t("Осталось", "Left")}: ${formatMoney(debt.totalAmount - debt.paidAmount)} $appCurrency)', style: TextStyle(color: sText, fontSize: 16)), 
                     const SizedBox(height: 24), 
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: sText)))), 
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: globalIsLightMode ? Colors.black.withOpacity(0.05) : Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(16), border: Border.all(color: appAccentColor.withOpacity(0.5))), child: TextField(controller: amtC, keyboardType: TextInputType.number, enableInteractiveSelection: false, autofocus: true, style: TextStyle(color: appAccentColor, fontSize: 32, fontWeight: FontWeight.bold), decoration: InputDecoration(border: InputBorder.none, hintText: "0 $appCurrency", hintStyle: TextStyle(color: sText)))), 
                     const SizedBox(height: 24), 
                     SizedBox(
                       width: double.infinity, height: 56, 
@@ -2850,7 +2996,7 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
                       Text('${t("Осталось", "Left")}: ${formatMoney(debt.totalAmount - debt.paidAmount)} $appCurrency', style: TextStyle(color: sText, fontSize: 16)),
                       const SizedBox(height: 24),
                       
-                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('${t("Оплачено", "Paid")}: ${formatMoney(debt.paidAmount)} / ${formatMoney(debt.totalAmount)}', style: TextStyle(color: sText, fontSize: 14)), Text('${(pct*100).toInt()}%', style: TextStyle(color: barColor, fontWeight: FontWeight.bold))]), 
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Flexible(child: Text('${t("Оплачено", "Paid")}: ${formatMoney(debt.paidAmount)} / ${formatMoney(debt.totalAmount)}', style: TextStyle(color: sText, fontSize: 14), overflow: TextOverflow.ellipsis)), const SizedBox(width: 8), Text('${(pct*100).toInt()}%', style: TextStyle(color: barColor, fontWeight: FontWeight.bold))]), 
                       const SizedBox(height: 12), 
                       Stack(children: [Container(height: 12, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(6))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 12, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(6), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
                       const SizedBox(height: 24),
@@ -2913,10 +3059,10 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
   @override Widget build(BuildContext context) {
     return Stack(
       children: [
-        Container(color: globalIsLightMode ? Colors.white : (widget.currentBg == 'black_solid' ? Colors.black : const Color(0xFF0F0F13))), 
-        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
-        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
-        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
+        Container(color: globalIsLightMode ? Colors.white : ((widget.currentBg == 'black_solid' || widget.currentBg == 'pure_black') ? const Color(0xFF000000) : const Color(0xFF0F0F13))), 
+        if (widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Image.network(widget.currentBg!, fit: BoxFit.cover)), 
+        if (globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(color: Colors.transparent))), 
+        if (!globalIsBgBlurred && widget.currentBg != null && widget.currentBg != 'white_solid' && widget.currentBg != 'black_solid' && widget.currentBg != 'pure_black' && widget.currentBg != 'pure_white') Positioned.fill(child: Container(color: Colors.black.withOpacity(0.5))), 
         Scaffold(
           backgroundColor: Colors.transparent, 
           appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, title: Text(t('Долги', 'Debts'), style: TextStyle(fontWeight: FontWeight.bold, color: pText)), iconTheme: IconThemeData(color: pText)), 
@@ -2950,7 +3096,7 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
                           const SizedBox(height: 12), 
                           Stack(children: [Container(height: 8, width: double.infinity, decoration: BoxDecoration(color: globalIsLightMode ? Colors.black12 : Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(4))), LayoutBuilder(builder: (context, constraints) => AnimatedContainer(duration: const Duration(milliseconds: 300), height: 8, width: constraints.maxWidth * pct, decoration: BoxDecoration(color: barColor, borderRadius: BorderRadius.circular(4), boxShadow: [BoxShadow(color: barColor.withOpacity(0.5), blurRadius: 8)])))]), 
                           const SizedBox(height: 12), 
-                          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('${t("Оплачено", "Paid")}: ${formatMoney(d.paidAmount)} / ${formatMoney(d.totalAmount)}', style: TextStyle(color: sText, fontSize: 12)), Text('${t("Дата возврата", "Due Date")}: ${formatCustomDate(d.dueDate)}', style: TextStyle(color: sText, fontSize: 12))])
+                          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Flexible(child: Text('${t("Оплачено", "Paid")}: ${formatMoney(d.paidAmount)} / ${formatMoney(d.totalAmount)}', style: TextStyle(color: sText, fontSize: 12), overflow: TextOverflow.ellipsis)), const SizedBox(width: 8), Flexible(child: Text('${t("Дата возврата", "Due Date")}: ${formatCustomDate(d.dueDate)}', style: TextStyle(color: sText, fontSize: 12), overflow: TextOverflow.ellipsis, textAlign: TextAlign.right))])
                         ]
                       )
                     )
@@ -2962,4 +3108,3 @@ class _DebtsManagerScreenState extends State<DebtsManagerScreen> {
     );
   }
 }
-
